@@ -1,1 +1,10 @@
-flask
+flask>=3.0,<4.0
+waitress>=3.0,<4.0
+
+# Lets the dashboard send files to the Recycle Bin instead of deleting them
+# outright. Without it, only permanent delete is available.
+send2trash>=1.8,<2.0
+
+# Only needed for watch_drives.py, which scans drives as they are plugged in.
+# Windows only. Everything else works without it.
+pywin32>=306; sys_platform == "win32"

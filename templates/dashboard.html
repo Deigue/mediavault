@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>MediaVault — Drive Inventory</title>
+<title>MediaVault - Drive Inventory</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
@@ -21,6 +21,10 @@
     --crit: #E8604C;
     --purple: #A78BFA;
     --seg-empty: #262D3B;
+    /* Use most of the window, with enough breathing room at the edges that
+       text does not run into the frame. Long media names need the width. */
+    --page-max: 1800px;
+    --page-pad: 28px;
   }
   *{box-sizing:border-box;}
   body{
@@ -35,7 +39,7 @@
   }
   .mono{font-family:'IBM Plex Mono', monospace;}
 
-  header{ max-width:1100px; margin:0 auto; padding:48px 24px 24px; }
+  header{ max-width:var(--page-max); margin:0 auto; padding:40px var(--page-pad) 22px; }
   .eyebrow{
     font-family:'IBM Plex Mono', monospace; font-size:12px; letter-spacing:0.14em;
     text-transform:uppercase; color:var(--accent); margin-bottom:10px;
@@ -65,14 +69,14 @@
     font-size:11px; color:var(--text-faint); margin-top:6px;
   }
 
-  .lowspace-banner{ max-width:1100px; margin:20px auto 0; padding:0 24px; }
+  .lowspace-banner{ max-width:var(--page-max); margin:20px auto 0; padding:0 var(--page-pad); }
   .lowspace-banner .box{
     border:1px solid var(--warn); background:rgba(242,166,90,0.08); border-radius:10px;
     padding:14px 18px; font-size:13px; color:#F0C89A;
   }
   .lowspace-banner .box b{ color:var(--warn); }
 
-  .toolbar{ max-width:1100px; margin:32px auto 0; padding:0 24px; position:relative; }
+  .toolbar{ max-width:var(--page-max); margin:28px auto 0; padding:0 var(--page-pad); position:relative; }
   .toolbar-row{ display:flex; gap:12px; align-items:center; }
   .toolbar input{
     flex:1; background:var(--panel); border:1px solid var(--line); border-radius:8px;
@@ -85,18 +89,137 @@
 
   .search-results{
     background:var(--panel-raised); border:1px solid var(--line); border-radius:10px;
-    margin-top:8px; max-height:340px; overflow-y:auto; display:none;
+    margin-top:8px; max-height:420px; overflow-y:auto; display:none;
+    position:absolute; left:var(--page-pad); right:var(--page-pad); z-index:20;
+    box-shadow:0 18px 40px rgba(0,0,0,0.45);
   }
   .search-results.show{ display:block; }
+  /* One line per hit: drive | name | path | tags | size. Everything needed to
+     tell two same-named copies apart without expanding anything. */
   .search-row{
-    display:grid; grid-template-columns: 1fr 140px 90px; gap:12px; align-items:center;
-    padding:10px 16px; font-size:13px; border-bottom:1px solid var(--line);
+    display:grid; grid-template-columns: 150px minmax(140px,1.1fr) minmax(0,1.6fr) auto 74px;
+    gap:12px; align-items:center; padding:7px 14px; font-size:12.5px;
+    border-bottom:1px solid var(--line); cursor:pointer;
   }
   .search-row:last-child{ border-bottom:none; }
-  .search-row .path{ color:var(--text-dim); font-size:11.5px; font-family:'IBM Plex Mono',monospace; }
-  .search-row .drive-tag{ color:var(--accent); font-family:'IBM Plex Mono',monospace; font-size:11.5px; }
+  .search-row:hover{ background:rgba(79,209,197,0.07); }
+  /* Keyboard highlight, deliberately stronger than hover so it is obvious
+     which row enter will act on. */
+  .search-row.active{
+    background:rgba(79,209,197,0.16);
+    box-shadow:inset 2px 0 0 var(--accent);
+  }
+  .search-row > *{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .search-row .nm{ color:var(--text); }
+  .search-row .path{ color:var(--text-faint); font-size:11px; font-family:'IBM Plex Mono',monospace; }
+  /* Disconnected drives are dimmed, so a result you can open right now stands
+     out from one that needs the drive plugging in first. */
+  .search-row .drive-tag{
+    color:var(--text-faint); font-family:'IBM Plex Mono',monospace; font-size:10.5px;
+    background:var(--panel); border-radius:4px; padding:2px 6px; text-align:center;
+  }
+  .search-row .drive-tag.connected{
+    color:var(--accent); background:rgba(79,209,197,0.10);
+  }
   .search-row .size{ text-align:right; font-family:'IBM Plex Mono',monospace; color:var(--text-dim); }
+  .search-row .stags{ display:flex; gap:4px; }
+  .search-row .stag{
+    font-size:10px; color:var(--text-dim); background:var(--panel);
+    border:1px solid var(--line); border-radius:10px; padding:1px 7px;
+  }
   .search-empty{ padding:16px; color:var(--text-faint); font-size:13px; }
+  .search-foot{ padding:7px 14px; font-size:11px; color:var(--text-faint); border-top:1px solid var(--line); }
+
+  /* Brief highlight on the node a search result jumped to. */
+  @keyframes flash-target{
+    0%,55%{ background:rgba(79,209,197,0.22); }
+    100%{ background:transparent; }
+  }
+  .jump-target > summary, .jump-target.file-node{ animation:flash-target 2.4s ease-out; border-radius:6px; }
+
+  /* ---- scan button and progress panel ---- */
+  .scan-btn{
+    background:rgba(79,209,197,0.12); border:1px solid var(--accent); color:var(--accent);
+    border-radius:8px; padding:11px 16px; font-size:13.5px; cursor:pointer;
+    font-family:'IBM Plex Sans',sans-serif; white-space:nowrap;
+  }
+  .scan-btn:hover{ background:rgba(79,209,197,0.22); }
+  .scan-btn:disabled{ opacity:0.55; cursor:default; }
+
+  .scan-panel{
+    display:none; margin-top:10px; background:var(--panel-raised);
+    border:1px solid var(--line); border-radius:10px; padding:14px 16px;
+  }
+  .scan-panel.show{ display:block; }
+  .scan-head{
+    display:flex; justify-content:space-between; align-items:center;
+    font-size:13px; color:var(--text); margin-bottom:10px;
+  }
+  .scan-head .mono{ color:var(--text-faint); font-size:11.5px; }
+  .scan-progress{ height:5px; background:var(--seg-empty); border-radius:3px; overflow:hidden; }
+  .scan-bar{ height:100%; width:0%; background:var(--accent); transition:width .25s ease-out; }
+  .scan-bar.failed{ background:var(--crit); }
+
+  .scan-drives{ margin-top:12px; display:flex; flex-direction:column; gap:5px; }
+  .scan-drive{
+    display:grid; grid-template-columns: 16px 1fr auto; gap:9px; align-items:center;
+    font-size:12.5px; color:var(--text-dim);
+  }
+  .scan-drive .st{ text-align:center; font-size:11px; }
+  .scan-drive .st.waiting{ color:var(--text-faint); }
+  .scan-drive .st.scanning{ color:var(--accent); }
+  .scan-drive .st.done{ color:var(--accent); }
+  .scan-drive .st.failed{ color:var(--crit); }
+  .scan-drive .detail{ font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--text-faint); }
+
+  .scan-log{
+    margin:12px 0 0; max-height:150px; overflow-y:auto; background:var(--bg);
+    border:1px solid var(--line); border-radius:6px; padding:9px 11px;
+    font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--text-faint);
+    white-space:pre-wrap; word-break:break-word;
+  }
+  .scan-actions{ display:flex; gap:8px; justify-content:flex-end; margin-top:10px; }
+
+  .scan-btn.ghost{ background:var(--panel); border-color:var(--line); color:var(--text-dim); }
+  .scan-btn.ghost:hover{ border-color:var(--accent-dim); color:var(--accent); background:var(--panel); }
+
+  .setup-note{ font-size:12px; color:var(--text-faint); line-height:1.6; margin-bottom:10px; }
+  .setup-note code{
+    background:var(--bg); padding:1px 5px; border-radius:4px;
+    font-family:'IBM Plex Mono',monospace; color:var(--accent); font-size:11px;
+  }
+  .setup-list{ display:flex; flex-direction:column; gap:2px; }
+  /* Fixed columns so the letters and names line up down the list, however
+     long any individual volume label is. */
+  .setup-row{
+    display:grid; grid-template-columns: 15px 34px 1fr auto;
+    align-items:center; gap:10px; padding:7px 9px; border-radius:6px;
+    font-size:13px; cursor:pointer;
+  }
+  .setup-row:hover{ background:rgba(255,255,255,0.03); }
+  .setup-row input{ cursor:pointer; margin:0; }
+  .setup-row .rletter{
+    font-family:'IBM Plex Mono',monospace; font-size:12px; color:var(--accent);
+  }
+  .setup-row .rname{
+    color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .setup-row .rbadges{ display:flex; gap:5px; }
+  .setup-row .rwarn{
+    font-size:10.5px; padding:2px 7px; border-radius:10px; white-space:nowrap;
+    background:rgba(242,166,90,0.12); color:var(--warn);
+  }
+  .setup-empty{ font-size:12.5px; color:var(--text-faint); padding:6px 0; }
+
+  /* ---- connected / disconnected indicators ---- */
+  .conn-dot{
+    display:inline-block; width:7px; height:7px; border-radius:50%;
+    margin-right:7px; vertical-align:middle; flex-shrink:0;
+  }
+  .conn-dot.on{ background:var(--accent); box-shadow:0 0 0 3px rgba(79,209,197,0.15); }
+  .conn-dot.off{ background:var(--text-faint); }
+  .conn-label.on{ color:var(--accent); }
+  .conn-label.off{ color:var(--text-faint); }
 
   .filter-bar{ display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; align-items:center; }
   .filter-label{ font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--text-faint); letter-spacing:0.05em; text-transform:uppercase; margin-right:4px; }
@@ -109,9 +232,38 @@
   .filter-chip.active{ background:rgba(79,209,197,0.15); border-color:var(--accent); color:var(--accent); }
   .filter-chip.clear{ color:var(--text-faint); }
 
-  main{ max-width:1100px; margin:24px auto 0; padding:0 24px; }
+  /* Backup state chips carry the same colour as the shield they match. */
+  .filter-chip.state{ display:inline-flex; align-items:center; gap:6px; }
+  .filter-chip.state .chip-ic{ font-size:12px; line-height:1; }
+  .filter-chip.full .chip-ic{ color:#4ADE80; }
+  .filter-chip.partial .chip-ic{ color:var(--warn); }
+  .filter-chip.split .chip-ic{ color:var(--purple); }
+  .filter-chip.full.active{
+    background:rgba(74,222,128,0.14); border-color:#4ADE80; color:#4ADE80;
+  }
+  .filter-chip.partial.active{
+    background:rgba(242,166,90,0.14); border-color:var(--warn); color:var(--warn);
+  }
+  .filter-chip.split.active{
+    background:rgba(167,139,250,0.14); border-color:var(--purple); color:var(--purple);
+  }
+  .filter-summary{
+    font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--text-faint);
+    margin-right:4px;
+  }
 
-  .drive{ background:var(--panel); border:1px solid var(--line); border-radius:10px; margin-bottom:16px; overflow:hidden; }
+  main{ max-width:var(--page-max); margin:22px auto 0; padding:0 var(--page-pad); }
+
+  /* No overflow:hidden here. It made the card a scroll container, so
+     scrollIntoView() on a row scrolled the card instead of the page, and it
+     clipped anything that needed to escape the card. The children that touch
+     the rounded corners carry their own radius instead. */
+  .drive{ background:var(--panel); border:1px solid var(--line); border-radius:10px; margin-bottom:16px; }
+  .drive-head{ border-radius:9px 9px 0 0; }
+  .drive:not(.open) .drive-head{ border-radius:9px; }
+  .drive-body{ border-radius:0 0 9px 9px; }
+  /* A drive with nothing matching the current filters drops out entirely. */
+  .drive.filtered-out{ display:none; }
   .drive-head{ padding:18px 20px 16px; cursor:pointer; display:flex; flex-direction:column; gap:10px; }
   .drive-top-row{ display:flex; justify-content:space-between; align-items:baseline; gap:16px; }
   .drive-name{ font-size:17px; font-weight:600; }
@@ -126,6 +278,28 @@
   .badge.crit{ background:rgba(232,96,76,0.15); color:var(--crit); border:1px solid var(--crit); }
   .chevron{ color:var(--text-faint); font-family:'IBM Plex Mono', monospace; font-size:12px; }
 
+  .drive-btn{
+    background:none; border:none; color:var(--text-faint); cursor:pointer;
+    font-size:12px; padding:2px 5px; border-radius:4px; vertical-align:middle;
+    opacity:0; transition:opacity .12s, color .12s;
+  }
+  .drive-head:hover .drive-btn{ opacity:1; }
+  .drive-btn:hover{ color:var(--accent); background:rgba(255,255,255,0.05); }
+  .drive-btn.delete-btn:hover{ color:var(--crit); }
+  .drive-name-input{
+    display:none; background:var(--panel-raised); border:1px solid var(--accent-dim);
+    border-radius:6px; padding:3px 9px; font-size:16px; font-weight:600; color:var(--text);
+    font-family:'IBM Plex Sans',sans-serif; outline:none; width:260px; vertical-align:middle;
+  }
+  .drive.renaming .drive-name{ display:none; }
+  .drive.renaming .drive-name-input{ display:inline-block; }
+  .drive.renaming .rename-btn, .drive.renaming .delete-btn{ display:none; }
+
+  /* A folder with nothing inside it gets no expand arrow and no pointer. */
+  details.node.leaf-dir > summary{ cursor:default; }
+  details.node.leaf-dir > summary::before{ content:"·"; }
+  .children-loading{ padding:6px 8px 6px 22px; font-size:12px; color:var(--text-faint); font-family:'IBM Plex Mono',monospace; }
+
   .drive-body{ border-top:1px solid var(--line); display:none; }
   .drive.open .drive-body{ display:block; }
 
@@ -135,7 +309,13 @@
     text-transform:uppercase; color:var(--text-faint); margin-bottom:10px;
   }
   .lp-list{ display:flex; flex-direction:column; gap:6px; }
-  .lp-row{ display:grid; grid-template-columns: 1fr 70px; gap:10px; font-size:12.5px; align-items:center; }
+  .lp-row{
+    display:grid; grid-template-columns: 1fr 70px; gap:10px; font-size:12.5px;
+    align-items:center; cursor:pointer; padding:3px 6px; margin:0 -6px;
+    border-radius:5px;
+  }
+  .lp-row:hover{ background:rgba(79,209,197,0.09); }
+  .lp-row:hover .lp-name{ color:var(--text); }
   .lp-row .lp-name{ color:var(--text-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:flex; align-items:center; gap:6px; }
   .lp-row .lp-size{ font-family:'IBM Plex Mono',monospace; text-align:right; color:var(--text); }
 
@@ -143,9 +323,12 @@
   .tree-empty{ padding:16px 0; color:var(--text-faint); font-size:13px; }
 
   details.node{ margin:1px 0; }
+  /* nowrap matters: with wrapping, a long release name pushed the size and
+     buttons onto a second line, which read as a stray blank row. The name
+     truncates with an ellipsis instead, and the full text is in the title. */
   details.node > summary{
     list-style:none; cursor:pointer; display:flex; align-items:center;
-    gap:8px; padding:6px 8px; border-radius:6px; font-size:13.5px; flex-wrap:wrap;
+    gap:8px; padding:6px 8px; border-radius:6px; font-size:13.5px; flex-wrap:nowrap;
   }
   details.node > summary::-webkit-details-marker{ display:none; }
   details.node > summary:hover{ background:rgba(255,255,255,0.03); }
@@ -154,16 +337,139 @@
     transition:transform 0.1s;
   }
   details.node[open] > summary::before{ transform:rotate(90deg); }
-  details.node > summary .name{ color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:340px; }
-  details.node > summary .name-wrap{ display:flex; align-items:center; gap:8px; flex:1; min-width:120px; }
+  /* The name is the only thing allowed to shrink, so the badge and tags
+     beside it stay legible and clickable however long the title is. */
+  details.node > summary .name{
+    color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+    min-width:2ch; flex:0 1 auto;
+  }
+  /* min-width:0 lets this shrink below its content, which is what allows
+     the name inside to ellipsis rather than forcing the row wider. */
+  details.node > summary .name-wrap{
+    display:flex; align-items:center; gap:8px; flex:1 1 auto; min-width:0;
+  }
   details.node > summary .bar-wrap{ width:90px; background:var(--seg-empty); border-radius:3px; height:5px; overflow:hidden; flex-shrink:0; }
   details.node > summary .bar-fill{ background:var(--accent-dim); height:100%; }
   details.node > summary .size{ font-family:'IBM Plex Mono',monospace; font-size:12px; color:var(--text-dim); width:70px; text-align:right; flex-shrink:0; margin-left:auto; }
   .children{ margin-left:20px; border-left:1px solid var(--line); padding-left:4px; }
 
-  .node.file-node{ display:flex; align-items:center; gap:8px; padding:5px 8px 5px 22px; font-size:13px; flex-wrap:wrap; }
-  .node.file-node .name{ color:var(--text-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:80px; }
+  .node.file-node{ display:flex; align-items:center; gap:8px; padding:5px 8px 5px 22px; font-size:13px; flex-wrap:nowrap; }
+  .node.file-node .name{
+    color:var(--text-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+    min-width:2ch; flex:0 1 auto;
+  }
   .node.file-node .size{ font-family:'IBM Plex Mono',monospace; font-size:11.5px; color:var(--text-faint); width:70px; text-align:right; flex-shrink:0; margin-left:auto; }
+
+  /* ---- backup shield ---- */
+  .shield-wrap{ position:relative; display:inline-flex; flex-shrink:0; }
+  .shield{
+    background:none; border:none; cursor:pointer; padding:0 2px; font-size:13px;
+    line-height:1; flex-shrink:0;
+  }
+  .shield.full{ color:#4ADE80; }
+  .shield.partial{ color:var(--warn); }
+  .shield.split{ color:var(--purple); }
+  /* position:fixed, placed by openShieldPopover(). The drive card clips its
+     overflow to keep its rounded corners, which would cut this off; a fixed
+     element is positioned against the viewport instead, so it is always
+     fully visible and clickable wherever the row happens to sit. */
+  .shield-pop{
+    display:none; position:fixed; z-index:120; min-width:290px;
+    max-width:460px; background:var(--panel-raised); border:1px solid var(--line);
+    border-radius:9px; padding:7px; box-shadow:0 14px 34px rgba(0,0,0,0.55);
+    flex-direction:column; gap:2px;
+  }
+  /* While open the popover is moved to <body>, so it is no longer a
+     descendant of .shield-wrap and needs its own visibility rule. */
+  .shield-wrap.open .shield-pop, .shield-pop.detached{ display:flex; }
+  .shield-pop-head{
+    font-family:'IBM Plex Mono',monospace; font-size:10px; letter-spacing:0.07em;
+    text-transform:uppercase; color:var(--text-faint); padding:3px 7px 5px;
+  }
+  .shield-copy{
+    display:grid; grid-template-columns:auto 1fr auto; gap:8px; align-items:center;
+    background:none; border:none; text-align:left; cursor:pointer; width:100%;
+    padding:6px 7px; border-radius:6px; font-family:'IBM Plex Sans',sans-serif;
+  }
+  .shield-copy:hover{ background:rgba(79,209,197,0.10); }
+  .shield-copy .sc-drive{ color:var(--accent); font-family:'IBM Plex Mono',monospace; font-size:10.5px; }
+  .shield-copy .sc-path{
+    color:var(--text-dim); font-size:11px; overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap;
+  }
+  .shield-copy .sc-state{ font-size:10px; white-space:nowrap; }
+  .shield-copy .sc-state.ok{ color:#4ADE80; }
+  .shield-copy .sc-state.part{ color:var(--warn); }
+  .shield-copy .sc-state.split{ color:var(--purple); }
+  .shield-warn{
+    font-size:11px; color:var(--warn); line-height:1.55; padding:2px 8px 7px;
+  }
+  .shield-copy .sc-warn{
+    grid-column:1 / -1; font-size:10px; color:var(--warn); opacity:0.85;
+  }
+
+  /* ---- per-node open / delete ----
+     Open sits next to the name. Delete is pushed past the size column and
+     separated by a divider, so the destructive control is nowhere near the
+     one you click all day. */
+  .node-actions{ display:inline-flex; gap:1px; flex-shrink:0; opacity:0; transition:opacity .12s; }
+  .node-danger{
+    display:inline-flex; flex-shrink:0; opacity:0; transition:opacity .12s;
+    margin-left:14px; padding-left:10px; border-left:1px solid var(--line);
+  }
+  .node:hover > summary .node-actions,
+  .node:hover > summary .node-danger,
+  .node.file-node:hover .node-actions,
+  .node.file-node:hover .node-danger,
+  .node-actions:focus-within, .node-danger:focus-within{ opacity:1; }
+  .node-btn{
+    background:none; border:none; cursor:pointer; line-height:0;
+    padding:3px 4px; border-radius:4px; color:var(--text-faint);
+    display:inline-flex; align-items:center; transition:color .12s, background .12s;
+  }
+  .node-btn .ic{ width:13px; height:13px; display:block; }
+  .node-btn.open-btn:hover{ color:var(--accent); background:rgba(79,209,197,0.14); }
+  .node-btn.del-btn{ color:#B4564A; }
+  .node-btn.del-btn:hover{ color:#FF6B58; background:rgba(232,96,76,0.18); }
+
+  /* ---- delete confirmation ---- */
+  .modal-backdrop{
+    display:none; position:fixed; inset:0; z-index:100;
+    background:rgba(8,10,14,0.72); align-items:center; justify-content:center; padding:24px;
+  }
+  .modal-backdrop.show{ display:flex; }
+  .modal{
+    background:var(--panel); border:1px solid var(--line); border-radius:12px;
+    padding:22px 24px; max-width:560px; width:100%;
+    box-shadow:0 24px 60px rgba(0,0,0,0.6);
+  }
+  .modal-title{ font-size:16px; font-weight:600; margin-bottom:10px; }
+  .modal-name{
+    font-family:'IBM Plex Mono',monospace; font-size:12.5px; color:var(--text);
+    background:var(--bg); border:1px solid var(--line); border-radius:7px;
+    padding:9px 11px; margin-bottom:10px; word-break:break-word;
+    white-space:pre-line; max-height:170px; overflow-y:auto;
+  }
+  .bulk-sep{ width:1px; align-self:stretch; background:var(--line); margin:0 3px; }
+  .modal-body{ font-size:13px; color:var(--text-dim); line-height:1.65; margin-bottom:16px; }
+  .modal-body b{ color:var(--crit); }
+  .modal-actions{ display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap; }
+  .bulk-btn.danger{
+    background:rgba(232,96,76,0.15); border-color:var(--crit); color:var(--crit);
+  }
+  .bulk-btn.danger:hover{ background:rgba(232,96,76,0.28); }
+  .modal-note{
+    font-size:11.5px; color:var(--text-faint); line-height:1.6;
+    margin-top:12px; padding-top:11px; border-top:1px solid var(--line);
+  }
+
+  .toast{
+    position:fixed; left:50%; bottom:22px; transform:translate(-50%, calc(100% + 40px));
+    background:var(--panel-raised); border:1px solid var(--accent-dim); color:var(--text);
+    border-radius:10px; padding:11px 16px; font-size:13px; z-index:110;
+    box-shadow:0 14px 40px rgba(0,0,0,0.55); transition:transform .2s ease-out;
+  }
+  .toast.show{ transform:translate(-50%, 0); }
 
   .dup-badge{
     display:inline-flex; align-items:center; justify-content:center; width:18px; height:18px;
@@ -176,7 +482,10 @@
   }
   .root-type-badge.redundancy{ background:rgba(242,166,90,0.12); color:var(--warn); }
 
-  .tags-inline{ display:inline-flex; align-items:center; gap:5px; flex-wrap:wrap; }
+  .tags-inline{ display:inline-flex; align-items:center; gap:5px; flex-wrap:nowrap; flex-shrink:0; }
+  /* Sits between the name and the tags, and must never be squeezed away:
+     it is the control that opens the list of other copies. */
+  .shield-wrap{ flex-shrink:0; }
   .tag-chip.small{
     display:inline-flex; align-items:center; gap:4px; background:var(--panel-raised);
     border:1px solid var(--line); border-radius:20px; padding:2px 4px 2px 9px;
@@ -197,6 +506,62 @@
     padding:2px 10px; font-size:11px; color:var(--text); width:100px; outline:none;
   }
 
+  /* ---- multi-select + bulk tagging ---- */
+  .sel-box{
+    appearance:none; width:13px; height:13px; flex-shrink:0; cursor:pointer;
+    border:1px solid var(--line); border-radius:3px; background:var(--panel-raised);
+    margin:0; position:relative; opacity:0.35; transition:opacity .12s;
+  }
+  .node:hover .sel-box, .sel-box:checked{ opacity:1; }
+  .sel-box:checked{ background:var(--accent); border-color:var(--accent); }
+  .sel-box:checked::after{
+    content:"✓"; position:absolute; inset:0; color:var(--bg);
+    font-size:10px; line-height:11px; text-align:center; font-weight:700;
+  }
+  /* Slides in on transform rather than `bottom` so the animation stays on the
+     compositor instead of triggering layout each frame. */
+  .selection-bar{
+    position:fixed; left:50%; bottom:22px;
+    transform:translate(-50%, calc(100% + 40px));
+    display:flex; align-items:center; gap:10px; z-index:50;
+    background:var(--panel-raised); border:1px solid var(--accent-dim);
+    border-radius:12px; padding:11px 14px;
+    box-shadow:0 14px 40px rgba(0,0,0,0.55);
+    transition:transform .18s ease-out; pointer-events:none;
+  }
+  .selection-bar.show{ transform:translate(-50%, 0); pointer-events:auto; }
+  .selection-bar .sel-count{ font-size:12.5px; color:var(--text-dim); white-space:nowrap; }
+  .selection-bar .sel-count b{ color:var(--accent); font-family:'IBM Plex Mono',monospace; }
+  .bulk-input{
+    background:var(--panel); border:1px solid var(--line); border-radius:7px;
+    padding:7px 11px; color:var(--text); font-size:13px; width:180px; outline:none;
+    font-family:'IBM Plex Sans',sans-serif;
+  }
+  .bulk-input:focus{ border-color:var(--accent-dim); }
+  .bulk-btn{
+    border-radius:7px; padding:7px 12px; font-size:12.5px; cursor:pointer;
+    font-family:'IBM Plex Sans',sans-serif; border:1px solid var(--line);
+    background:var(--panel); color:var(--text-dim);
+  }
+  .bulk-btn.apply{ background:rgba(79,209,197,0.15); border-color:var(--accent); color:var(--accent); }
+  .bulk-btn.apply:hover{ background:rgba(79,209,197,0.25); }
+  .bulk-btn.remove:hover{ border-color:var(--crit); color:var(--crit); }
+  .bulk-btn.ghost:hover{ color:var(--text); }
+
+  /* ---- scaffold prompt on an empty drive ---- */
+  .tree-empty-sub{ color:var(--text-faint); font-size:12px; margin:6px 0; line-height:1.6; }
+  .tree-empty code{
+    background:var(--panel-raised); padding:1px 5px; border-radius:4px;
+    font-family:'IBM Plex Mono',monospace; color:var(--accent); font-size:11px;
+  }
+  .scaffold-btn{
+    margin:10px 0 4px; background:rgba(79,209,197,0.12); border:1px solid var(--accent);
+    color:var(--accent); border-radius:8px; padding:9px 15px; font-size:13px;
+    cursor:pointer; font-family:'IBM Plex Sans',sans-serif;
+  }
+  .scaffold-btn:hover{ background:rgba(79,209,197,0.22); }
+  .scaffold-btn:disabled{ opacity:0.5; cursor:default; }
+
   .empty-state{ text-align:center; padding:80px 24px; color:var(--text-dim); }
   .empty-state .big{ font-size:15px; margin-bottom:8px; color:var(--text); }
   .empty-state code{
@@ -204,7 +569,7 @@
     font-family:'IBM Plex Mono', monospace; color:var(--accent);
   }
 
-  footer{ max-width:1100px; margin:40px auto 0; padding:0 24px; color:var(--text-faint); font-size:12px; }
+  footer{ max-width:var(--page-max); margin:40px auto 0; padding:0 var(--page-pad); color:var(--text-faint); font-size:12px; }
 </style>
 </head>
 <body>
@@ -240,7 +605,7 @@
   <div class="box">
     <b>Low space:</b>
     {% for d in low_space_drives %}{{ d.label }} ({{ d.free_h }} free){% if not loop.last %}, {% endif %}{% endfor %}
-    — expand a drive below and check its "largest folders" panel for where to start.
+    Expand a drive below and check its "largest folders" panel for where to start.
     Titles marked <span class="dup-badge" style="width:auto;padding:1px 5px;">⧉</span> have a copy elsewhere already.
   </div>
 </div>
@@ -249,19 +614,69 @@
 <div class="toolbar">
   <div class="toolbar-row">
     <input id="search" type="text" placeholder="Search for a show or movie across every drive…" oninput="onSearchInput()" autocomplete="off">
-    <span class="hint mono">{{ drives|length }} bays</span>
+    <button id="scan-btn" class="scan-btn" onclick="startScan()">Scan connected drives</button>
+    <button id="setup-btn" class="scan-btn ghost" onclick="openSetup()">Set up a drive</button>
+    <span class="hint mono">{{ stats.connected_count }}/{{ drives|length }} connected</span>
+  </div>
+
+  <div id="setup-panel" class="scan-panel">
+    <div class="scan-head"><span>Drives without a library folder</span></div>
+    <div class="setup-note">
+      Creates <code>Videos</code> with <code>Anime</code>, <code>Anime Movies</code>,
+      <code>Movies</code> and <code>TV Shows</code> inside, then scans the drive.
+      Nothing existing is modified.
+    </div>
+    <div id="setup-list" class="setup-list"></div>
+    <div class="scan-actions">
+      <button class="bulk-btn ghost" onclick="closeSetup()">Cancel</button>
+      <button id="setup-go" class="bulk-btn apply" onclick="runSetup()">Create folders</button>
+    </div>
   </div>
   <div id="search-results" class="search-results"></div>
 
+  <div id="scan-panel" class="scan-panel">
+    <div class="scan-head">
+      <span id="scan-title">Scanning…</span>
+      <span id="scan-elapsed" class="mono"></span>
+    </div>
+    <div class="scan-progress"><div id="scan-bar" class="scan-bar"></div></div>
+    <div id="scan-drives" class="scan-drives"></div>
+    <pre id="scan-log" class="scan-log"></pre>
+    <div class="scan-actions">
+      <button class="bulk-btn ghost" onclick="hideScanPanel()">Hide</button>
+      <button id="scan-reload" class="bulk-btn apply" onclick="location.reload()" style="display:none;">Reload to see results</button>
+    </div>
+  </div>
+
+  <div class="filter-bar">
+    <span class="filter-label">Backup</span>
+    <button class="filter-chip state full" data-state="full" onclick="toggleStateFilter(this)">
+      <span class="chip-ic">🛡</span> Backed up
+    </button>
+    <button class="filter-chip state partial" data-state="partial" onclick="toggleStateFilter(this)">
+      <span class="chip-ic">⛊</span> Partial
+    </button>
+    <button class="filter-chip state split" data-state="split" onclick="toggleStateFilter(this)">
+      <span class="chip-ic">⇄</span> Split
+    </button>
+    <button class="filter-chip state none" data-state="none" onclick="toggleStateFilter(this)">
+      Nowhere else
+    </button>
+  </div>
+
   {% if all_tags %}
   <div class="filter-bar">
-    <span class="filter-label">Filter by tag</span>
+    <span class="filter-label">Tag</span>
     {% for t in all_tags %}
       <button class="filter-chip" data-tag="{{ t }}" onclick="toggleTagFilter(this)">{{ t }}</button>
     {% endfor %}
-    <button class="filter-chip clear" onclick="clearTagFilters()">Clear</button>
   </div>
   {% endif %}
+
+  <div class="filter-bar">
+    <span id="filter-summary" class="filter-summary"></span>
+    <button class="filter-chip clear" onclick="clearAllFilters()">Clear filters</button>
+  </div>
 </div>
 
 <main id="drive-list">
@@ -272,54 +687,162 @@
     </div>
   {% endif %}
 
+  {% macro select_box(node) %}
+    <input type="checkbox" class="sel-box" title="Select this title"
+           data-drive-id="{{ node.drive_id }}" data-rel-path="{{ node.rel_path }}"
+           data-node-id="{{ node.id }}" data-name="{{ node.name }}"
+           data-size="{{ node.size_h }}" data-is-dir="{{ 1 if node.is_dir else 0 }}">
+  {% endmacro %}
+
+  {# Everything that describes the title sits directly after its name, in a
+     fixed order: backup indicator first, then tags, then the add button.
+     The badge is rendered by node_meta, not in here, so it always comes
+     first regardless of how many tags there are. #}
   {% macro tag_editor(node) %}
     <span class="tags-inline" data-drive-id="{{ node.drive_id }}" data-rel-path="{{ node.rel_path }}" onclick="event.preventDefault()">
       {% for t in node.tags %}
       <span class="tag-chip small" data-tag="{{ t }}">{{ t }}<button class="tag-remove" data-tag="{{ t }}" title="Remove tag">×</button></span>
       {% endfor %}
-      {% if node.duplicates %}
-      <span class="dup-badge" title="Also found at:&#10;{% for o in node.duplicates %}{{ o.drive_label }} → {{ o.rel_path }}{% if o.root_type == 'redundancy' %} (redundancy copy){% endif %}{% if not loop.last %}&#10;{% endif %}{% endfor %}">⧉</span>
-      {% endif %}
       <button class="tag-add-btn" title="Add tag">+</button>
       <input class="tag-input" list="tag-suggestions" placeholder="tag name">
     </span>
   {% endmacro %}
 
+  {% macro node_meta(node) %}
+    {% if node.backup_state %}{{ backup_badge(node) }}{% endif %}
+    {{ tag_editor(node) }}
+  {% endmacro %}
+
+  {# Shield on titles that exist somewhere else. Green when at least one copy
+     is complete, amber when every copy is partial. Nothing at all when there
+     is no copy, so the tree stays quiet. #}
+  {% macro backup_badge(node) %}
+    <span class="shield-wrap">
+      {% set state_titles = {
+           'full': 'Backed up elsewhere',
+           'partial': 'Only partly backed up',
+           'split': 'Split across drives, not a backup'
+         } %}
+      {% set state_icons = {'full': '🛡', 'partial': '⛊', 'split': '⇄'} %}
+      {% set state_heads = {
+           'full': 'Also on',
+           'partial': 'Partial copies on',
+           'split': 'Other parts of this title on'
+         } %}
+      <button class="shield {{ node.backup_state }}"
+              title="{{ state_titles[node.backup_state] }}">{{ state_icons[node.backup_state] }}</button>
+      <span class="shield-pop">
+        <span class="shield-pop-head">{{ state_heads[node.backup_state] }}</span>
+        {% if node.backup_state == 'split' %}
+        <span class="shield-warn">
+          These share no content. Neither is a backup of the other, so
+          deleting either one loses what only it has.
+        </span>
+        {% endif %}
+        {% for o in node.duplicates %}
+        <button class="shield-copy" data-node-id="{{ o.id }}"
+                title="Jump to this copy">
+          <span class="sc-drive">{{ o.drive_label }}</span>
+          <span class="sc-path">{{ o.rel_path }}</span>
+          <span class="sc-state {{ {'full':'ok','partial':'part','split':'split'}[o.relation] }}">
+            {{ o.detail if o.detail else o.relation }}
+          </span>
+          {% if o.same_drive %}<span class="sc-warn">same drive</span>{% endif %}
+        </button>
+        {% endfor %}
+      </span>
+    </span>
+  {% endmacro %}
+
+  {# Open and delete, on every folder and file. Inline SVG rather than emoji
+     so the icons take their colour from CSS: emoji ignore `color` entirely,
+     which left the bin looking grey however it was styled. #}
+  {# The everyday action sits beside the name. Delete is deliberately not
+     next to it: it lives at the far right edge, past the size, with a
+     divider, so reaching for play cannot land on it. #}
+  {% macro node_actions(node) %}
+    <span class="node-actions">
+      <button class="node-btn open-btn" data-node-id="{{ node.id }}"
+              title="{{ 'Open this folder' if node.is_dir else 'Play this file' }}">
+        {% if node.is_dir %}{{ icon_folder() }}{% else %}{{ icon_play() }}{% endif %}
+      </button>
+    </span>
+  {% endmacro %}
+
+  {% macro node_danger(node) %}
+    <span class="node-danger">
+      <button class="node-btn del-btn" data-node-id="{{ node.id }}"
+              data-name="{{ node.name }}" data-size="{{ node.size_h }}"
+              data-is-dir="{{ 1 if node.is_dir else 0 }}"
+              title="Delete">{{ icon_trash() }}</button>
+    </span>
+  {% endmacro %}
+
+  {% macro icon_folder() %}<svg viewBox="0 0 16 16" class="ic" aria-hidden="true"><path d="M1.5 3.5h4l1.2 1.6h7.8a1 1 0 0 1 1 1v6.4a1 1 0 0 1-1 1H1.5a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>{% endmacro %}
+  {% macro icon_play() %}<svg viewBox="0 0 16 16" class="ic" aria-hidden="true"><path d="M4.5 2.8l8 5.2-8 5.2z" fill="currentColor"/></svg>{% endmacro %}
+  {% macro icon_trash() %}<svg viewBox="0 0 16 16" class="ic" aria-hidden="true"><path d="M2.6 4.3h10.8M6.2 4.3V2.9h3.6v1.4M3.9 4.3l.7 8.6a1 1 0 0 0 1 .9h4.8a1 1 0 0 0 1-.9l.7-8.6M6.6 6.8v4.4M9.4 6.8v4.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>{% endmacro %}
+
   {% macro render_node(node) %}
     {% if node.is_dir %}
-    <details class="node dir-node" data-depth="{{ node.depth }}" {% if node.depth == 2 %}data-tags="{{ node.tags|join('|') }}"{% endif %}>
+    {# Folders deeper than the title level aren't rendered up front - they're
+       fetched by loadChildren() the first time this <details> is opened. #}
+    {% set needs_lazy = node.has_children and not node.children %}
+    <details class="node dir-node {{ 'leaf-dir' if not node.has_children else '' }}"
+             data-depth="{{ node.depth }}"
+             data-node-id="{{ node.id }}"
+             {% if needs_lazy %}data-lazy="1"{% endif %}
+             {% if node.depth == 2 %}data-tags="{{ node.tags|join('|') }}" data-backup="{{ node.backup_state or '' }}"{% endif %}
+             ontoggle="onNodeToggle(this)">
       <summary>
         <span class="name-wrap">
-          <span class="name">{{ node.name }}</span>
+          {% if node.depth == 2 %}{{ select_box(node) }}{% endif %}
+          <span class="name" title="{{ node.name }}">{{ node.name }}</span>
           {% if node.depth == 0 %}
             <span class="root-type-badge {{ 'redundancy' if node.root_type == 'redundancy' else '' }}">{{ 'BACKUP' if node.root_type == 'redundancy' else 'LIBRARY' }}</span>
           {% endif %}
-          {% if node.depth == 2 %}{{ tag_editor(node) }}{% endif %}
+          {% if node.depth == 2 %}{{ node_meta(node) }}{% endif %}
         </span>
+        {{ node_actions(node) }}
         <span class="bar-wrap"><span class="bar-fill" style="width:{{ [node.pct_of_drive*3, 100]|min }}%"></span></span>
         <span class="size">{{ node.size_h }}</span>
+        {{ node_danger(node) }}
       </summary>
       <div class="children">
         {% for child in node.children %}{{ render_node(child) }}{% endfor %}
       </div>
     </details>
     {% else %}
-    <div class="node file-node" data-depth="{{ node.depth }}" {% if node.depth == 2 %}data-tags="{{ node.tags|join('|') }}"{% endif %}>
-      <span class="name">{{ node.name }}</span>
-      {% if node.depth == 2 %}{{ tag_editor(node) }}{% endif %}
+    <div class="node file-node" data-depth="{{ node.depth }}" data-node-id="{{ node.id }}" {% if node.depth == 2 %}data-tags="{{ node.tags|join('|') }}" data-backup="{{ node.backup_state or '' }}"{% endif %}>
+      {% if node.depth == 2 %}{{ select_box(node) }}{% endif %}
+      <span class="name" title="{{ node.name }}">{{ node.name }}</span>
+      {% if node.depth == 2 %}{{ node_meta(node) }}{% endif %}
+      {{ node_actions(node) }}
       <span class="size">{{ node.size_h }}</span>
+      {{ node_danger(node) }}
     </div>
     {% endif %}
   {% endmacro %}
 
   {% for d in drives %}
-  <div class="drive" data-drive-index="{{ loop.index }}">
-    <div class="drive-head" onclick="toggleDrive(this.parentElement)">
+  <div class="drive" data-drive-index="{{ loop.index }}" data-drive-id="{{ d.drive_id }}">
+    <div class="drive-head">
       <div class="drive-top-row">
         <div>
+          <span class="conn-dot {{ 'on' if d.connected else 'off' }}"
+                title="{{ (d.label ~ ' is connected as ' ~ d.current_letter) if d.connected else (d.label ~ ' is not connected') }}"></span>
           <span class="drive-name">{{ d.label }}</span>
+          <input class="drive-name-input" value="{{ d.label }}" maxlength="80" autocomplete="off">
+          <button class="drive-btn rename-btn" title="Rename this drive">✎</button>
+          <button class="drive-btn delete-btn" title="Forget this drive (does not touch the drive itself)">🗑</button>
           {% if d.low_space %}<span class="badge {% if d.pct_used > 92 %}crit{% else %}warn{% endif %}">LOW SPACE</span>{% endif %}
-          <div class="drive-meta">last scanned {{ d.last_scanned[:16] if d.last_scanned else 'never' }} · {{ d.last_seen_path }}</div>
+          <div class="drive-meta">
+            {% if d.connected %}
+              <span class="conn-label on">connected as {{ d.current_letter }}</span>
+            {% else %}
+              <span class="conn-label off">not connected</span>
+            {% endif %}
+            · last scanned {{ d.last_scanned[:16] if d.last_scanned else 'never' }}
+          </div>
         </div>
         <div style="display:flex; align-items:center; gap:16px;">
           <div class="drive-stats"><span class="used">{{ d.used_h }}</span> / {{ d.total_h }} <span class="mono">({{ d.pct_used }}%)</span></div>
@@ -337,12 +860,11 @@
         <div class="lp-label">Largest folders on this drive</div>
         <div class="lp-list">
           {% for lf in d.largest_folders %}
-          <div class="lp-row">
-            <span class="lp-name" title="{{ lf.rel_path }}">
+          <div class="lp-row" data-node-id="{{ lf.id }}"
+               title="Jump to {{ lf.rel_path }}">
+            <span class="lp-name">
               {{ lf.rel_path }}
-              {% if lf.duplicates %}
-              <span class="dup-badge" title="Also found at:&#10;{% for o in lf.duplicates %}{{ o.drive_label }} → {{ o.rel_path }}{% if o.root_type == 'redundancy' %} (redundancy copy){% endif %}{% if not loop.last %}&#10;{% endif %}{% endfor %}">⧉</span>
-              {% endif %}
+              {% if lf.backup_state %}{{ backup_badge(lf) }}{% endif %}
             </span>
             <span class="lp-size">{{ lf.size_h }}</span>
           </div>
@@ -353,7 +875,14 @@
 
       <div class="tree">
         {% if d.tree|length == 0 %}
-          <div class="tree-empty">No library or redundancy folder found on this drive yet. Re-scan with --root-prefix / --redundancy-prefix if you use different naming.</div>
+          <div class="tree-empty">
+            <div>No library folder found on this drive yet.</div>
+            <div class="tree-empty-sub">Either it uses different naming (rescan with <code>--root-prefix</code>), or it hasn't been set up.</div>
+            <button class="scaffold-btn" data-drive-id="{{ d.drive_id }}">
+              Create library folders on this drive
+            </button>
+            <div class="tree-empty-sub">Creates <code>Videos/</code> with <code>Anime</code>, <code>Anime Movies</code>, <code>Movies</code>, and <code>TV Shows</code> inside. The drive must be connected. Nothing existing is modified.</div>
+          </div>
         {% endif %}
         {% for root_node in d.tree %}{{ render_node(root_node) }}{% endfor %}
       </div>
@@ -362,13 +891,865 @@
   {% endfor %}
 </main>
 
+<div id="delete-backdrop" class="modal-backdrop">
+  <div class="modal">
+    <div class="modal-title">Delete this <span id="del-kind">item</span>?</div>
+    <div class="modal-name" id="del-name"></div>
+    <div class="modal-body" id="del-body"></div>
+    <div class="modal-actions">
+      <button class="bulk-btn ghost" onclick="closeDeleteModal()">Cancel</button>
+      <button class="bulk-btn" id="del-bin" onclick="confirmDelete('bin')">Delete to Recycle Bin</button>
+      <button class="bulk-btn danger" id="del-perm" onclick="confirmDelete('permanent')">Delete permanently</button>
+    </div>
+    <div class="modal-note">
+      The Recycle Bin can be undone but does not free space until you empty it.
+      Deleting permanently frees the space now and cannot be undone.
+    </div>
+  </div>
+</div>
+
+<div id="selection-bar" class="selection-bar">
+  <span class="sel-count"><b id="sel-n">0</b> selected</span>
+  <input id="bulk-tag-input" class="bulk-input" list="tag-suggestions"
+         placeholder="tag to apply…" autocomplete="off">
+  <button class="bulk-btn apply" onclick="applyBulkTag('add')">Apply tag</button>
+  <button class="bulk-btn remove" onclick="applyBulkTag('remove')">Remove tag</button>
+  <span class="bulk-sep"></span>
+  <button class="bulk-btn danger" onclick="openBulkDeleteModal()">Delete selected</button>
+  <button class="bulk-btn ghost" onclick="clearSelection()">Clear</button>
+</div>
+
 <footer>
   MediaVault · reads directly from mediavault.db · re-run scanner.py after copying, moving, or deleting files
 </footer>
 
 <script>
+/* The drive header expands the drive, but it also hosts the rename and
+   delete controls. Rather than an inline onclick (which would fire before
+   any delegated handler got the chance to stop it), everything in the
+   header goes through the single delegated listener below, which checks
+   for a control first and treats a bare header click as a toggle. */
 function toggleDrive(el){
+  if(el.classList.contains('renaming')) return;  // don't collapse mid-edit
   el.classList.toggle('open');
+}
+
+/* ---------- lazy tree loading ----------
+   Depths 0-2 (roots, categories, titles) are rendered server-side. Anything
+   deeper is fetched the first time its parent folder is expanded, so the
+   initial page stays small however many files are indexed. */
+function onNodeToggle(details){
+  if(!details.open || details.dataset.lazy !== '1') return;
+  details.dataset.lazy = '0';   // claim it immediately so a fast re-toggle can't double-fetch
+  loadChildren(details);
+}
+
+async function loadChildren(details){
+  const box = details.querySelector(':scope > .children');
+  const nodeId = details.dataset.nodeId;
+  box.innerHTML = '<div class="children-loading">loading…</div>';
+  try{
+    const res = await fetch('/api/children?parent_id=' + encodeURIComponent(nodeId));
+    const data = await res.json();
+    if(!data.ok){ throw new Error(data.error || 'unknown error'); }
+    if(data.children.length === 0){
+      box.innerHTML = '';
+      details.classList.add('leaf-dir');
+      return;
+    }
+    box.innerHTML = '';
+    data.children.forEach(c => box.appendChild(buildNode(c)));
+  } catch(err){
+    box.innerHTML = '<div class="children-loading">could not load contents: ' + escapeHtml(err.message) + '</div>';
+    details.dataset.lazy = '1';   // let the user retry by collapsing and reopening
+  }
+}
+
+/* Mirrors the render_node Jinja macro for lazily-fetched nodes. These are
+   always below the title level, so they never carry tags or dup badges. */
+function buildNode(n){
+  const size = document.createElement('span');
+  size.className = 'size';
+  size.textContent = n.size_h;
+
+  if(!n.is_dir){
+    const row = document.createElement('div');
+    row.className = 'node file-node';
+    row.dataset.depth = n.depth;
+    row.dataset.nodeId = n.id;
+    const name = document.createElement('span');
+    name.className = 'name';
+    name.textContent = n.name;
+    name.title = n.name;
+    row.append(name, buildNodeActions(n), size, buildNodeDanger(n));
+    return row;
+  }
+
+  const details = document.createElement('details');
+  details.className = 'node dir-node' + (n.has_children ? '' : ' leaf-dir');
+  details.dataset.depth = n.depth;
+  details.dataset.nodeId = n.id;
+  if(n.has_children){
+    details.dataset.lazy = '1';
+    details.setAttribute('ontoggle', 'onNodeToggle(this)');
+  }
+
+  const summary = document.createElement('summary');
+  const wrap = document.createElement('span');
+  wrap.className = 'name-wrap';
+  const name = document.createElement('span');
+  name.className = 'name';
+  name.textContent = n.name;
+  name.title = n.name;
+  wrap.appendChild(name);
+
+  const barWrap = document.createElement('span');
+  barWrap.className = 'bar-wrap';
+  const barFill = document.createElement('span');
+  barFill.className = 'bar-fill';
+  barFill.style.width = Math.min(n.pct_of_drive * 3, 100) + '%';
+  barWrap.appendChild(barFill);
+
+  summary.append(wrap, buildNodeActions(n), barWrap, size, buildNodeDanger(n));
+
+  const children = document.createElement('div');
+  children.className = 'children';
+  details.append(summary, children);
+  return details;
+}
+
+/* Matches the node_actions Jinja macro, for lazily-fetched nodes. The same
+   inline SVG markup, so the icons pick up colour from CSS the same way. */
+const ICON_FOLDER = '<svg viewBox="0 0 16 16" class="ic" aria-hidden="true"><path d="M1.5 3.5h4l1.2 1.6h7.8a1 1 0 0 1 1 1v6.4a1 1 0 0 1-1 1H1.5a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>';
+const ICON_PLAY = '<svg viewBox="0 0 16 16" class="ic" aria-hidden="true"><path d="M4.5 2.8l8 5.2-8 5.2z" fill="currentColor"/></svg>';
+const ICON_TRASH = '<svg viewBox="0 0 16 16" class="ic" aria-hidden="true"><path d="M2.6 4.3h10.8M6.2 4.3V2.9h3.6v1.4M3.9 4.3l.7 8.6a1 1 0 0 0 1 .9h4.8a1 1 0 0 0 1-.9l.7-8.6M6.6 6.8v4.4M9.4 6.8v4.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+function buildNodeActions(n){
+  const box = document.createElement('span');
+  box.className = 'node-actions';
+
+  const open = document.createElement('button');
+  open.className = 'node-btn open-btn';
+  open.dataset.nodeId = n.id;
+  open.title = n.is_dir ? 'Open this folder' : 'Play this file';
+  open.innerHTML = n.is_dir ? ICON_FOLDER : ICON_PLAY;
+
+  box.appendChild(open);
+  return box;
+}
+
+/* Delete lives in its own container at the end of the row, matching the
+   node_danger macro, so it is kept away from the open button. */
+function buildNodeDanger(n){
+  const box = document.createElement('span');
+  box.className = 'node-danger';
+
+  const del = document.createElement('button');
+  del.className = 'node-btn del-btn';
+  del.dataset.nodeId = n.id;
+  del.dataset.name = n.name;
+  del.dataset.size = n.size_h;
+  del.dataset.isDir = n.is_dir ? '1' : '0';
+  del.title = 'Delete';
+  del.innerHTML = ICON_TRASH;
+
+  box.appendChild(del);
+  return box;
+}
+
+/* ---------- drive header: rename / forget / expand ---------- */
+document.addEventListener('click', function(e){
+  const renameBtn = e.target.closest('.rename-btn');
+  if(renameBtn){
+    const drive = renameBtn.closest('.drive');
+    drive.classList.add('renaming');
+    const input = drive.querySelector('.drive-name-input');
+    input.value = drive.querySelector('.drive-name').textContent.trim();
+    input.focus();
+    input.select();
+    return;
+  }
+  const deleteBtn = e.target.closest('.delete-btn');
+  if(deleteBtn){
+    const drive = deleteBtn.closest('.drive');
+    const label = drive.querySelector('.drive-name').textContent.trim();
+    if(!confirm(`Forget "${label}"?\n\nThis removes the drive, its indexed contents, and its tags from MediaVault. Nothing on the actual drive is touched. Rescanning adds the drive back, but tags you set by hand will be gone.`)) return;
+    postJSON('/api/drive/delete', {drive_id: drive.dataset.driveId}, () => drive.remove());
+    return;
+  }
+  // Not a control - a bare click on the header expands/collapses the drive.
+  // Ignore clicks on the rename input itself so editing doesn't collapse it.
+  const head = e.target.closest('.drive-head');
+  if(head && !e.target.classList.contains('drive-name-input')){
+    toggleDrive(head.closest('.drive'));
+  }
+});
+
+document.addEventListener('keydown', function(e){
+  if(!e.target.classList.contains('drive-name-input')) return;
+  const drive = e.target.closest('.drive');
+  if(e.key === 'Escape'){ drive.classList.remove('renaming'); return; }
+  if(e.key !== 'Enter') return;
+  e.preventDefault();
+  const label = e.target.value.trim();
+  if(!label){ drive.classList.remove('renaming'); return; }
+  postJSON('/api/drive/label', {drive_id: drive.dataset.driveId, label: label}, (data) => {
+    drive.querySelector('.drive-name').textContent = data.label;
+    drive.classList.remove('renaming');
+  });
+});
+
+/* ---------- scanning ----------
+   The scan runs on the server in a background thread. This starts it, then
+   polls for progress until it finishes. Polling rather than holding the
+   request open, because a full scan takes minutes. */
+let scanPollTimer = null;
+
+async function startScan(){
+  const btn = document.getElementById('scan-btn');
+
+  let targets = [];
+  try{
+    const res = await fetch('/api/scan/targets');
+    const data = await res.json();
+    targets = data.targets || [];
+  } catch(e){
+    alert('Could not reach the server. Is dashboard.py still running?');
+    return;
+  }
+
+  if(targets.length === 0){
+    alert('No drives to scan.\n\nConnect a drive with a Videos folder on it, '
+        + 'or scan it once from the command line first.');
+    return;
+  }
+
+  const list = targets.map(t => `  ${t.label}  (${t.root}, ${t.reason})`).join('\n');
+  if(!confirm(`Scan ${targets.length} drive(s)?\n\n${list}\n\n`
+            + `This reads every folder on them and can take a few minutes.`)) return;
+
+  btn.disabled = true;
+  btn.textContent = 'Scanning…';
+  showScanPanel();
+
+  try{
+    const res = await fetch('/api/scan', {method: 'POST'});
+    const data = await res.json();
+    if(!data.ok){
+      alert(data.error || 'Could not start the scan.');
+      resetScanButton();
+      return;
+    }
+    renderScanJob(data.job);
+    pollScan();
+  } catch(e){
+    alert('Could not start the scan. Is dashboard.py still running?');
+    resetScanButton();
+  }
+}
+
+function pollScan(){
+  clearTimeout(scanPollTimer);
+  scanPollTimer = setTimeout(async () => {
+    try{
+      const res = await fetch('/api/scan/status');
+      const data = await res.json();
+      if(data.job){
+        renderScanJob(data.job);
+        if(data.job.status === 'running'){ pollScan(); return; }
+        finishScan(data.job);
+        return;
+      }
+    } catch(e){
+      document.getElementById('scan-title').textContent = 'Lost contact with the server.';
+    }
+    resetScanButton();
+  }, 700);
+}
+
+function finishScan(job){
+  const failed = job.drives.filter(d => d.status === 'failed').length;
+  document.getElementById('scan-title').textContent = failed
+    ? `Finished with ${failed} failure(s)`
+    : `Finished. Scanned ${job.completed} drive(s).`;
+  document.getElementById('scan-reload').style.display = '';
+  resetScanButton();
+}
+
+function resetScanButton(){
+  const btn = document.getElementById('scan-btn');
+  btn.disabled = false;
+  btn.textContent = 'Scan connected drives';
+}
+
+function showScanPanel(){
+  document.getElementById('scan-panel').classList.add('show');
+  document.getElementById('scan-reload').style.display = 'none';
+}
+function hideScanPanel(){
+  document.getElementById('scan-panel').classList.remove('show');
+}
+
+const SCAN_ICONS = {waiting: '·', scanning: '▸', done: '✓', failed: '✕'};
+
+function renderScanJob(job){
+  if(job.status === 'running'){
+    document.getElementById('scan-title').textContent =
+      job.current ? `Scanning ${job.current}` : 'Scanning…';
+  }
+  document.getElementById('scan-elapsed').textContent =
+    Math.round(job.elapsed || 0) + 's';
+
+  const bar = document.getElementById('scan-bar');
+  bar.style.width = job.total ? Math.round(100 * job.completed / job.total) + '%' : '0%';
+  bar.classList.toggle('failed', job.status === 'failed');
+
+  const box = document.getElementById('scan-drives');
+  box.innerHTML = '';
+  job.drives.forEach(d => {
+    const row = document.createElement('div');
+    row.className = 'scan-drive';
+    const st = document.createElement('span');
+    st.className = 'st ' + d.status;
+    st.textContent = SCAN_ICONS[d.status] || '·';
+    const name = document.createElement('span');
+    name.textContent = d.label;
+    const detail = document.createElement('span');
+    detail.className = 'detail';
+    detail.textContent = d.detail || d.status;
+    row.append(st, name, detail);
+    box.appendChild(row);
+  });
+
+  const log = document.getElementById('scan-log');
+  const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 20;
+  log.textContent = (job.log || []).join('\n');
+  if(atBottom) log.scrollTop = log.scrollHeight;
+}
+
+/* If a scan is already running (started from another tab, or the page was
+   reloaded mid-scan), pick it up rather than pretending nothing is happening. */
+window.addEventListener('DOMContentLoaded', async () => {
+  try{
+    const res = await fetch('/api/scan/status');
+    const data = await res.json();
+    if(data.job && data.job.status === 'running'){
+      document.getElementById('scan-btn').disabled = true;
+      document.getElementById('scan-btn').textContent = 'Scanning…';
+      showScanPanel();
+      renderScanJob(data.job);
+      pollScan();
+    }
+  } catch(e){ /* server not up yet, nothing to resume */ }
+});
+
+/* ---------- open and delete ---------- */
+let pendingDelete = null;
+
+document.addEventListener('click', function(e){
+  const openBtn = e.target.closest('.open-btn');
+  if(openBtn){
+    e.preventDefault();
+    e.stopPropagation();
+    postJSON('/api/node/open', {node_id: Number(openBtn.dataset.nodeId)});
+    return;
+  }
+  const delBtn = e.target.closest('.del-btn');
+  if(delBtn){
+    e.preventDefault();
+    e.stopPropagation();
+    openDeleteModal(delBtn);
+    return;
+  }
+  // A row in the largest-folders panel jumps to that folder in the tree,
+  // where the open, delete and tag controls are.
+  const lpRow = e.target.closest('.lp-row');
+  if(lpRow && !e.target.closest('.shield-wrap')){
+    e.preventDefault();
+    e.stopPropagation();
+    jumpToNodeId(Number(lpRow.dataset.nodeId));
+    return;
+  }
+  // Shield popover: open the one clicked, close any other.
+  const shield = e.target.closest('.shield');
+  if(shield){
+    e.preventDefault();
+    e.stopPropagation();
+    const wrap = shield.closest('.shield-wrap');
+    const wasOpen = wrap.classList.contains('open');
+    closeShieldPopovers();
+    if(!wasOpen) openShieldPopover(wrap, shield);
+    return;
+  }
+  const copy = e.target.closest('.shield-copy');
+  if(copy){
+    e.preventDefault();
+    e.stopPropagation();
+    closeShieldPopovers();
+    jumpToNodeId(Number(copy.dataset.nodeId));
+    return;
+  }
+  if(!e.target.closest('.shield-pop')){
+    closeShieldPopovers();
+  }
+});
+
+/* The popover is position:fixed, so it has to be placed by hand. It opens
+   below the shield, flipping above it when there is not enough room, and is
+   clamped to the viewport so it is never partly off screen. */
+let openPopover = null;   // {pop, home} while one is showing
+
+function openShieldPopover(wrap, shield){
+  const pop = wrap.querySelector('.shield-pop');
+  wrap.classList.add('open');
+
+  // Move it to <body> while it is open. Nested <details> and <summary>
+  // elements end up acting as the containing block for position:fixed
+  // descendants, which put the popover hundreds of pixels off target.
+  // Parented to <body> it positions against the viewport as intended.
+  const home = document.createComment('shield-pop');
+  pop.parentElement.insertBefore(home, pop);
+  document.body.appendChild(pop);
+  pop.classList.add('detached');
+  openPopover = {pop, home};
+
+  const anchor = shield.getBoundingClientRect();
+  const box = pop.getBoundingClientRect();
+  const margin = 8;
+
+  let top = anchor.bottom + 6;
+  if(top + box.height > window.innerHeight - margin){
+    const above = anchor.top - box.height - 6;
+    top = above >= margin ? above : Math.max(margin, window.innerHeight - box.height - margin);
+  }
+
+  let left = anchor.left;
+  if(left + box.width > window.innerWidth - margin){
+    left = Math.max(margin, window.innerWidth - box.width - margin);
+  }
+
+  pop.style.top = Math.round(top) + 'px';
+  pop.style.left = Math.round(left) + 'px';
+}
+
+function closeShieldPopovers(){
+  document.querySelectorAll('.shield-wrap.open').forEach(w => w.classList.remove('open'));
+  // Put a detached popover back where it belongs, so the markup stays intact
+  // and the next open finds it in its own wrapper again.
+  if(openPopover){
+    const {pop, home} = openPopover;
+    pop.classList.remove('detached');
+    if(home.parentElement) home.parentElement.insertBefore(pop, home);
+    home.remove();
+    openPopover = null;
+  }
+}
+
+// A fixed popover would otherwise hang in place while the page moves.
+window.addEventListener('scroll', closeShieldPopovers, true);
+window.addEventListener('resize', closeShieldPopovers);
+
+/* Jump to a node we only know the id of, such as the other copy of a title. */
+async function jumpToNodeId(nodeId){
+  try{
+    const res = await fetch(`/api/node/${nodeId}/locate`);
+    const data = await res.json();
+    if(!data.ok){ alert(data.error || 'Could not find that copy.'); return; }
+    const n = data.node;
+    await jumpToNode({id: n.id, drive_id: n.drive_id, rel_path: n.rel_path,
+                      ancestors: n.ancestors, drive_label: ''});
+  } catch(e){
+    alert('Could not reach the server.');
+  }
+}
+
+function openDeleteModal(btn){
+  const isDir = btn.dataset.isDir === '1';
+  pendingDelete = {
+    items: [{nodeId: Number(btn.dataset.nodeId),
+             el: btn.closest('.dir-node') || btn.closest('.file-node')}],
+    name: btn.dataset.name
+  };
+  document.getElementById('del-kind').textContent = isDir ? 'folder' : 'file';
+  document.getElementById('del-name').textContent = btn.dataset.name;
+  document.getElementById('del-body').innerHTML = isDir
+    ? `This deletes the folder and <b>everything inside it</b> (${escapeHtml(btn.dataset.size)}).`
+    : `This deletes the file (${escapeHtml(btn.dataset.size)}).`;
+  document.getElementById('delete-backdrop').classList.add('show');
+}
+
+/* Same modal, for everything ticked in the selection bar. */
+function openBulkDeleteModal(){
+  const boxes = selectedBoxes();
+  if(boxes.length === 0) return;
+
+  pendingDelete = {
+    items: boxes.map(b => ({
+      nodeId: Number(b.dataset.nodeId),
+      el: b.closest('.dir-node') || b.closest('.file-node')
+    })),
+    name: `${boxes.length} titles`
+  };
+
+  const folders = boxes.filter(b => b.dataset.isDir === '1').length;
+  document.getElementById('del-kind').textContent = `${boxes.length} selected`;
+  document.getElementById('del-name').textContent =
+    boxes.slice(0, 6).map(b => b.dataset.name).join('\n')
+    + (boxes.length > 6 ? `\n… and ${boxes.length - 6} more` : '');
+  document.getElementById('del-body').innerHTML =
+    `This deletes <b>${boxes.length} items</b>`
+    + (folders ? `, including ${folders} folder(s) and everything inside them` : '')
+    + `. Combined size: ${escapeHtml(bulkSelectedSize(boxes))}.`;
+  document.getElementById('delete-backdrop').classList.add('show');
+}
+
+/* The sizes are pre-formatted strings, so this just lists them rather than
+   pretending to total them up. */
+function bulkSelectedSize(boxes){
+  const sizes = boxes.map(b => b.dataset.size).filter(Boolean);
+  return sizes.length <= 3 ? sizes.join(' + ') : `${sizes.slice(0,3).join(' + ')} + ${sizes.length-3} more`;
+}
+
+function closeDeleteModal(){
+  document.getElementById('delete-backdrop').classList.remove('show');
+  pendingDelete = null;
+}
+
+document.addEventListener('keydown', function(e){
+  if(e.key === 'Escape' && pendingDelete) closeDeleteModal();
+});
+document.getElementById('delete-backdrop').addEventListener('click', function(e){
+  if(e.target === this) closeDeleteModal();
+});
+
+function confirmDelete(mode){
+  if(!pendingDelete) return;
+  const target = pendingDelete;
+  const buttons = ['del-bin', 'del-perm'].map(id => document.getElementById(id));
+  buttons.forEach(b => { b.disabled = true; });
+  const done = () => buttons.forEach(b => { b.disabled = false; });
+
+  postJSON('/api/nodes/delete',
+    {node_ids: target.items.map(i => i.nodeId), mode: mode},
+    (data) => {
+      // Remove only the ones that actually succeeded, so anything that
+      // failed stays visible and can be retried.
+      const failedIds = new Set(data.results.filter(r => !r.ok).map(r => r.node_id));
+      target.items.forEach(i => {
+        if(!failedIds.has(i.nodeId) && i.el) i.el.remove();
+      });
+      clearSelection();
+      closeDeleteModal();
+      done();
+
+      if(data.failed){
+        alert(`${data.deleted} deleted, ${data.failed} could not be:\n\n`
+          + data.results.filter(r => !r.ok)
+              .map(r => '- ' + r.error.split('\n')[0]).join('\n'));
+      } else {
+        flashToast(mode === 'permanent'
+          ? `Deleted ${data.deleted} item(s), ${data.freed_h} freed`
+          : `Moved ${data.deleted} item(s) to the Recycle Bin`);
+      }
+    }, done);
+}
+
+function flashToast(message){
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.textContent = message;
+  document.body.appendChild(el);
+  setTimeout(() => el.classList.add('show'), 10);
+  setTimeout(() => { el.classList.remove('show'); setTimeout(() => el.remove(), 300); }, 3600);
+}
+
+/* ---------- setting up a drive ----------
+   Drives with no library folder are never scanned, so they are not in the
+   database at all. They are found by looking at what is mounted right now. */
+async function openSetup(){
+  const panel = document.getElementById('setup-panel');
+  const list = document.getElementById('setup-list');
+  list.innerHTML = '<div class="setup-empty">Checking drives…</div>';
+  panel.classList.add('show');
+
+  let candidates = [];
+  try{
+    const res = await fetch('/api/drives/setup-candidates');
+    candidates = (await res.json()).candidates || [];
+  } catch(e){
+    list.innerHTML = '<div class="setup-empty">Could not reach the server.</div>';
+    return;
+  }
+
+  if(candidates.length === 0){
+    list.innerHTML = '<div class="setup-empty">'
+      + 'Every connected drive already has a library folder.</div>';
+    return;
+  }
+
+  list.innerHTML = '';
+  candidates.forEach(c => {
+    // Columns: checkbox, drive letter, name, then any badges on the right.
+    const row = document.createElement('label');
+    row.className = 'setup-row';
+
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.value = c.root;
+
+    const letter = document.createElement('span');
+    letter.className = 'rletter';
+    letter.textContent = c.letter;
+
+    const name = document.createElement('span');
+    name.className = 'rname';
+    name.textContent = c.name;
+
+    const badges = document.createElement('span');
+    badges.className = 'rbadges';
+    setupWarnings(c).forEach(text => {
+      const b = document.createElement('span');
+      b.className = 'rwarn';
+      b.textContent = text;
+      badges.appendChild(b);
+    });
+
+    row.append(box, letter, name, badges);
+    list.appendChild(row);
+  });
+}
+
+/* Flags for drives you probably do not want a media library on. */
+function setupWarnings(c){
+  const out = [];
+  if(/google drive|dropbox|onedrive/i.test(c.name)) out.push('cloud synced');
+  if(c.removable) out.push('removable');
+  return out;
+}
+
+function closeSetup(){
+  document.getElementById('setup-panel').classList.remove('show');
+}
+
+async function runSetup(){
+  const chosen = [...document.querySelectorAll('#setup-list input:checked')].map(b => b.value);
+  if(chosen.length === 0){ alert('Pick at least one drive first.'); return; }
+  if(!confirm(`Create the library folders on ${chosen.length} drive(s)?\n\n`
+            + chosen.join('\n'))) return;
+
+  const btn = document.getElementById('setup-go');
+  btn.disabled = true;
+  btn.textContent = 'Creating…';
+  postJSON('/api/drives/setup', {roots: chosen}, (data) => {
+    const failed = data.results.filter(r => !r.ok);
+    if(failed.length){
+      alert('Some drives could not be set up:\n\n'
+          + failed.map(f => `${f.root}: ${f.error}`).join('\n'));
+    }
+    location.reload();
+  }, () => { btn.disabled = false; btn.textContent = 'Create folders'; });
+}
+
+/* ---------- clicking away cancels ----------
+   Anything the page opens in place (a rename box, a tag input, the search
+   results, the setup panel) should close when you click somewhere else,
+   because clicking elsewhere means you changed your mind. Escape does the
+   same. Registered last so the handlers that open these things have already
+   run; each check ignores the control that opened it, or the click that
+   opens would immediately close it again. */
+function cancelRename(){
+  document.querySelectorAll('.drive.renaming').forEach(d => d.classList.remove('renaming'));
+}
+
+function cancelTagInput(){
+  document.querySelectorAll('.tag-input').forEach(input => {
+    if(input.style.display === 'inline-block'){
+      input.style.display = 'none';
+      input.value = '';
+    }
+  });
+}
+
+document.addEventListener('click', function(e){
+  if(!e.target.closest('.drive-name-input') && !e.target.closest('.rename-btn')){
+    cancelRename();
+  }
+  if(!e.target.closest('.tag-input') && !e.target.closest('.tag-add-btn')){
+    cancelTagInput();
+  }
+  if(!e.target.closest('.toolbar')){
+    closeSearchResults();
+  }
+  // The setup panel is a deliberate choice, so only an outside click closes
+  // it, never a click within its own list.
+  const setupPanel = document.getElementById('setup-panel');
+  if(setupPanel.classList.contains('show')
+     && !e.target.closest('#setup-panel') && !e.target.closest('#setup-btn')){
+    closeSetup();
+  }
+});
+
+document.addEventListener('keydown', function(e){
+  if(e.key !== 'Escape') return;
+  // The delete dialog has its own Escape handling and takes priority.
+  if(document.getElementById('delete-backdrop').classList.contains('show')) return;
+  cancelRename();
+  cancelTagInput();
+  closeShieldPopovers();
+  closeSearchResults();
+  if(document.getElementById('setup-panel').classList.contains('show')) closeSetup();
+});
+
+/* ---------- multi-select + bulk tagging ----------
+   Selection lives on the checkboxes themselves rather than in a separate
+   set, so it can't drift out of sync with what's on screen. */
+let lastCheckedBox = null;
+let shiftHeldOnClick = false;
+
+/* click fires before change, so the modifier state is captured here. The
+   checkbox also sits inside a <summary>, which would expand the folder on
+   click - hence the stopPropagation. */
+document.addEventListener('click', function(e){
+  if(!e.target.closest('.sel-box')) return;
+  shiftHeldOnClick = e.shiftKey;
+  e.stopPropagation();
+});
+
+document.addEventListener('change', function(e){
+  const box = e.target.closest('.sel-box');
+  if(!box) return;
+
+  // Shift-click extends the selection across the whole run since the last one.
+  if(shiftHeldOnClick && lastCheckedBox && lastCheckedBox !== box){
+    const all = [...document.querySelectorAll('.sel-box')];
+    const [a, b] = [all.indexOf(lastCheckedBox), all.indexOf(box)].sort((x, y) => x - y);
+    if(a !== -1 && b !== -1) all.slice(a, b + 1).forEach(cb => { cb.checked = box.checked; });
+  }
+  shiftHeldOnClick = false;
+  lastCheckedBox = box;
+  refreshSelectionBar();
+});
+
+function selectedBoxes(){
+  return [...document.querySelectorAll('.sel-box:checked')];
+}
+
+function refreshSelectionBar(){
+  const n = selectedBoxes().length;
+  document.getElementById('sel-n').textContent = n;
+  document.getElementById('selection-bar').classList.toggle('show', n > 0);
+}
+
+function clearSelection(){
+  selectedBoxes().forEach(cb => { cb.checked = false; });
+  lastCheckedBox = null;
+  refreshSelectionBar();
+}
+
+async function applyBulkTag(action){
+  const input = document.getElementById('bulk-tag-input');
+  const tag = input.value.trim();
+  const boxes = selectedBoxes();
+  if(!tag){ input.focus(); return; }
+  if(boxes.length === 0) return;
+
+  const items = boxes.map(cb => ({drive_id: cb.dataset.driveId, rel_path: cb.dataset.relPath}));
+  postJSON('/api/tag/bulk', {items: items, tag: tag, action: action}, () => {
+    // Reflect the change in place so the tag chips and filters stay accurate
+    // without a full page reload.
+    boxes.forEach(cb => {
+      const node = cb.closest('.dir-node') || cb.closest('.file-node');
+      const wrap = node && node.querySelector('.tags-inline');
+      if(!node || !wrap) return;
+      const tags = new Set((node.dataset.tags || '').split('|').filter(Boolean));
+
+      if(action === 'add' && !tags.has(tag)){
+        tags.add(tag);
+        wrap.insertBefore(makeTagChip(tag), wrap.querySelector('.tag-add-btn'));
+      } else if(action === 'remove'){
+        tags.delete(tag);
+        const chip = wrap.querySelector(`.tag-chip[data-tag="${CSS.escape(tag)}"]`);
+        if(chip) chip.remove();
+      }
+      node.dataset.tags = [...tags].join('|');
+    });
+    input.value = '';
+    clearSelection();
+  });
+}
+
+document.addEventListener('keydown', function(e){
+  if(e.target.id === 'bulk-tag-input' && e.key === 'Enter'){
+    e.preventDefault();
+    applyBulkTag('add');
+  }
+});
+
+function makeTagChip(tag){
+  const chip = document.createElement('span');
+  chip.className = 'tag-chip small';
+  chip.dataset.tag = tag;
+  chip.appendChild(document.createTextNode(tag));
+  const rm = document.createElement('button');
+  rm.className = 'tag-remove';
+  rm.dataset.tag = tag;
+  rm.title = 'Remove tag';
+  rm.textContent = '×';
+  chip.appendChild(rm);
+  return chip;
+}
+
+/* ---------- scaffold a library onto an empty drive ---------- */
+document.addEventListener('click', function(e){
+  const btn = e.target.closest('.scaffold-btn');
+  if(!btn) return;
+  e.stopPropagation();
+  btn.disabled = true;
+  const original = btn.textContent;
+  btn.textContent = 'Creating…';
+  postJSON('/api/drive/scaffold', {drive_id: btn.dataset.driveId}, (data) => {
+    btn.textContent = data.created.length
+      ? `Created ${data.created.length} folder(s), reloading...`
+      : 'Folders already existed, reloading...';
+    setTimeout(() => location.reload(), 800);
+  }, () => { btn.disabled = false; btn.textContent = original; });
+});
+
+async function postJSON(url, body, onSuccess, onFailure){
+  let res;
+  try{
+    res = await fetch(url, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+  } catch(err){
+    // Only a genuine transport failure lands here.
+    alert('Could not reach the server. Is dashboard.py still running?');
+    if(onFailure) onFailure();
+    return;
+  }
+
+  // A 404 or a server crash returns HTML, not JSON. Say what actually
+  // happened, rather than letting the parse error look like a dropped
+  // connection.
+  let data;
+  try{
+    data = await res.json();
+  } catch(err){
+    alert(`The server returned ${res.status} ${res.statusText} for ${url}.\n\n`
+        + `This usually means the dashboard is running older code than this `
+        + `page expects. Restart it and reload.`);
+    if(onFailure) onFailure();
+    return;
+  }
+
+  if(!data.ok){
+    alert('Failed: ' + (data.error || 'unknown error'));
+    if(onFailure) onFailure();
+    return;
+  }
+  if(onSuccess) onSuccess(data);
 }
 
 /* ---------- search ---------- */
@@ -387,19 +1768,166 @@ async function runSearch(q){
     const data = await res.json();
     if(!data.results || data.results.length === 0){
       box.innerHTML = '<div class="search-empty">No matches.</div>';
-    } else {
-      box.innerHTML = data.results.map(r => `
-        <div class="search-row">
-          <div><div>${escapeHtml(r.name)}</div><div class="path">${escapeHtml(r.rel_path)}</div></div>
-          <div class="drive-tag">${escapeHtml(r.drive_label)}</div>
-          <div class="size">${escapeHtml(r.size_h)}</div>
-        </div>`).join('');
+      box.classList.add('show');
+      return;
     }
+    box.innerHTML = '';
+    data.results.forEach(r => box.appendChild(buildSearchRow(r)));
+    const foot = document.createElement('div');
+    foot.className = 'search-foot';
+    foot.textContent = data.results.length + ' match' + (data.results.length === 1 ? '' : 'es')
+                       + ' · up and down arrows to move, enter to jump, esc to close';
+    box.appendChild(foot);
     box.classList.add('show');
+    searchCursor = -1;   // nothing highlighted until the user presses a key
   } catch(e){
     box.innerHTML = '<div class="search-empty">Search failed - is dashboard.py still running?</div>';
     box.classList.add('show');
   }
+}
+
+/* Label plus the live drive letter, without saying the letter twice. An
+   auto-detected label already looks like "HDD-2TB-01 (D:)", and a drive can
+   be renamed to anything, so check before appending. */
+function driveTagText(r){
+  if(!r.connected) return r.drive_label;
+  const letter = r.drive_letter;                 // e.g. "D:"
+  const label = r.drive_label;
+  const alreadyThere = new RegExp('\\(\\s*' + letter.replace(':', '\\:') + '\\s*\\\\?\\s*\\)$')
+                         .test(label.trim())
+                     || label.trim().toUpperCase().endsWith(letter.toUpperCase());
+  return alreadyThere ? label : `${label} (${letter})`;
+}
+
+/* One compact line per hit. The drive and full path are on the row itself so
+   two copies of the same title are distinguishable at a glance. */
+function buildSearchRow(r){
+  const row = document.createElement('div');
+  row.className = 'search-row';
+  row.title = r.drive_label + ' → ' + r.rel_path;
+
+  // Drives that are plugged in show their current letter, so it is obvious
+  // which results you can go and open right now.
+  const drive = document.createElement('div');
+  drive.className = 'drive-tag' + (r.connected ? ' connected' : '');
+  drive.textContent = driveTagText(r);
+  drive.title = r.connected
+    ? `${r.drive_label} is connected as ${r.drive_letter}`
+    : `${r.drive_label} is not connected`;
+
+  const nm = document.createElement('div');
+  nm.className = 'nm';
+  nm.textContent = r.name;
+
+  const path = document.createElement('div');
+  path.className = 'path';
+  path.textContent = r.rel_path;
+
+  const tags = document.createElement('div');
+  tags.className = 'stags';
+  (r.tags || []).forEach(t => {
+    const s = document.createElement('span');
+    s.className = 'stag';
+    s.textContent = t;
+    tags.appendChild(s);
+  });
+
+  const size = document.createElement('div');
+  size.className = 'size';
+  size.textContent = r.size_h;
+
+  row.append(drive, nm, path, tags, size);
+  row.result = r;               // so keyboard navigation can jump to it too
+  row.addEventListener('click', () => jumpToNode(r));
+  return row;
+}
+
+/* ---------- keyboard navigation of search results ----------
+   Down and up move the highlight, enter jumps to it, escape closes. Mirrors
+   what hovering and clicking already do. */
+let searchCursor = -1;
+
+function searchRows(){
+  return [...document.querySelectorAll('#search-results .search-row')];
+}
+
+function closeSearchResults(){
+  const box = document.getElementById('search-results');
+  box.classList.remove('show');
+  searchCursor = -1;
+}
+
+function moveSearchCursor(step){
+  const rows = searchRows();
+  if(rows.length === 0) return;
+
+  searchCursor += step;
+  if(searchCursor < 0) searchCursor = rows.length - 1;
+  if(searchCursor >= rows.length) searchCursor = 0;
+
+  rows.forEach((r, i) => r.classList.toggle('active', i === searchCursor));
+  rows[searchCursor].scrollIntoView({block: 'nearest'});
+}
+
+document.addEventListener('keydown', function(e){
+  const box = document.getElementById('search-results');
+  const open = box.classList.contains('show');
+  const inSearch = e.target.id === 'search';
+  if(!open || !(inSearch || e.target.closest('#search-results'))) return;
+
+  if(e.key === 'ArrowDown'){ e.preventDefault(); moveSearchCursor(1); }
+  else if(e.key === 'ArrowUp'){ e.preventDefault(); moveSearchCursor(-1); }
+  else if(e.key === 'Enter'){
+    const rows = searchRows();
+    if(searchCursor >= 0 && rows[searchCursor]){
+      e.preventDefault();
+      jumpToNode(rows[searchCursor].result);
+    }
+  }
+  else if(e.key === 'Escape'){ e.preventDefault(); closeSearchResults(); }
+});
+
+/* ---------- jump from a search hit to its place in the tree ----------
+   Ancestors come back with the search result, outermost first. Each one is
+   opened in turn, waiting for any lazy fetch to finish before opening the
+   next - otherwise the deeper node wouldn't exist in the DOM yet. */
+async function jumpToNode(result){
+  const driveEl = document.querySelector(`.drive[data-drive-id="${CSS.escape(result.drive_id)}"]`);
+  if(!driveEl){ return; }
+  driveEl.classList.add('open');
+
+  document.getElementById('search-results').classList.remove('show');
+
+  for(const ancestorId of (result.ancestors || [])){
+    const el = driveEl.querySelector(`details[data-node-id="${ancestorId}"]`);
+    if(!el) break;                      // chain broken (stale page) - stop where we got to
+    if(!el.open){
+      el.open = true;
+      if(el.dataset.lazy === '1'){ el.dataset.lazy = '0'; await loadChildren(el); }
+    } else if(el.dataset.lazy === '1'){
+      el.dataset.lazy = '0';
+      await loadChildren(el);
+    }
+  }
+
+  const target = driveEl.querySelector(`[data-node-id="${result.id}"]`)
+              || findNodeByPath(driveEl, result.rel_path);
+  if(!target){
+    alert('Found it on ' + result.drive_label + ' at:\n' + result.rel_path
+          + '\n\n(Could not expand to it - try reloading the page.)');
+    return;
+  }
+  target.scrollIntoView({behavior:'smooth', block:'center'});
+  target.classList.remove('jump-target');
+  void target.offsetWidth;              // restart the CSS flash if it's already been used
+  target.classList.add('jump-target');
+}
+
+/* Files are rendered without a node id, so fall back to matching on name. */
+function findNodeByPath(driveEl, relPath){
+  const leaf = relPath.split('\\').pop();
+  return [...driveEl.querySelectorAll('.file-node .name')]
+    .find(n => n.textContent.trim() === leaf)?.closest('.file-node') || null;
 }
 function escapeHtml(s){
   const d = document.createElement('div');
@@ -407,36 +1935,118 @@ function escapeHtml(s){
   return d.innerHTML;
 }
 
-/* ---------- tag filter ---------- */
+/* ---------- filters ----------
+   Two independent dimensions, combined with AND: backup state (the shield
+   icons) and tags. Within each dimension, several selections mean OR. */
 let activeTagFilters = new Set();
+let activeStateFilters = new Set();
+
 function toggleTagFilter(el){
   const t = el.dataset.tag;
   if(activeTagFilters.has(t)){ activeTagFilters.delete(t); el.classList.remove('active'); }
   else { activeTagFilters.add(t); el.classList.add('active'); }
-  applyTagFilter();
+  applyFilters();
 }
-function clearTagFilters(){
+
+function toggleStateFilter(el){
+  const s = el.dataset.state;
+  if(activeStateFilters.has(s)){ activeStateFilters.delete(s); el.classList.remove('active'); }
+  else { activeStateFilters.add(s); el.classList.add('active'); }
+  applyFilters();
+}
+
+function clearAllFilters(){
   activeTagFilters.clear();
+  activeStateFilters.clear();
   document.querySelectorAll('.filter-chip.active').forEach(el => el.classList.remove('active'));
-  applyTagFilter();
+  applyFilters();
 }
-function applyTagFilter(){
-  // dir nodes at depth 2
-  const dirNodes = document.querySelectorAll('.node.dir-node[data-depth="2"]');
-  // file nodes at depth 2 (direct category-level files like standalone movies)
-  const fileNodes = document.querySelectorAll('.node.file-node[data-depth="2"]');
-  const allNodes = [...dirNodes, ...fileNodes];
-  allNodes.forEach(n => {
-    if(activeTagFilters.size === 0){ n.style.display = ''; return; }
+
+function filterableNodes(){
+  // Titles live at depth 2, as folders or as standalone files in a category.
+  return [...document.querySelectorAll('.node[data-depth="2"]')];
+}
+
+function applyFilters(){
+  const nodes = filterableNodes();
+  const filtering = activeTagFilters.size > 0 || activeStateFilters.size > 0;
+  let shown = 0;
+
+  nodes.forEach(n => {
+    if(!filtering){ n.style.display = ''; return; }
+
+    // '' in the data attribute means the title exists nowhere else.
+    const state = n.dataset.backup || 'none';
+    const stateOk = activeStateFilters.size === 0 || activeStateFilters.has(state);
+
     const tags = (n.dataset.tags || '').split('|').filter(Boolean);
-    const match = tags.some(t => activeTagFilters.has(t));
+    const tagOk = activeTagFilters.size === 0 || tags.some(t => activeTagFilters.has(t));
+
+    const match = stateOk && tagOk;
     n.style.display = match ? '' : 'none';
     if(match){
-      let d = n.closest('details');
+      shown++;
+      // Open the ancestors so the match is visible, but not the match itself.
+      // Expanding it would lazy-fetch contents for every hit at once.
+      let d = n.parentElement.closest('details');
       while(d){ d.open = true; d = d.parentElement.closest('details'); }
       const driveEl = n.closest('.drive');
       if(driveEl) driveEl.classList.add('open');
     }
+  });
+
+  // Hide the containers that are now empty, so what is left is only what
+  // matched: categories with no visible titles, then library roots with no
+  // visible categories, then whole drives with nothing left at all.
+  filterLargestPanels(filtering);
+  cascadeEmptyContainers(filtering);
+
+  const summary = document.getElementById('filter-summary');
+  const hiddenDrives = document.querySelectorAll('.drive.filtered-out').length;
+  summary.textContent = filtering
+    ? `${shown} of ${nodes.length} titles`
+      + (hiddenDrives ? `, ${hiddenDrives} drive(s) hidden` : '')
+    : '';
+}
+
+/* The largest-folders panel is a shortcut into the tree, so it has to obey
+   the same filters. Without this it kept listing titles that are filtered
+   out, and clicking one jumped to a hidden row, which looked like nothing
+   happened. */
+function filterLargestPanels(filtering){
+  document.querySelectorAll('.largest-panel').forEach(panel => {
+    let visible = 0;
+    panel.querySelectorAll('.lp-row').forEach(row => {
+      if(!filtering){ row.style.display = ''; visible++; return; }
+      const target = document.querySelector(`.node[data-node-id="${row.dataset.nodeId}"]`);
+      const shown = !!target && target.style.display !== 'none';
+      row.style.display = shown ? '' : 'none';
+      if(shown) visible++;
+    });
+    panel.style.display = visible ? '' : 'none';
+  });
+}
+
+function cascadeEmptyContainers(filtering){
+  // Depth 1 (categories), then depth 0 (library and redundancy roots).
+  [1, 0].forEach(depth => {
+    document.querySelectorAll(`.node[data-depth="${depth}"]`).forEach(container => {
+      if(!filtering){ container.style.display = ''; return; }
+      const box = container.querySelector(':scope > .children');
+      const hasVisible = box && [...box.children].some(c => c.style.display !== 'none');
+      container.style.display = hasVisible ? '' : 'none';
+      if(hasVisible) container.open = true;
+    });
+  });
+
+  document.querySelectorAll('.drive').forEach(drive => {
+    if(!filtering){
+      drive.classList.remove('filtered-out');
+      return;
+    }
+    const anyVisible = [...drive.querySelectorAll('.node[data-depth="0"]')]
+      .some(r => r.style.display !== 'none');
+    drive.classList.toggle('filtered-out', !anyVisible);
   });
 }
 

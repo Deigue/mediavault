@@ -38,10 +38,18 @@ import argparse
 import os
 import shutil
 import sys
+import time
 
 import db
 import driveid
 import tagging
+
+DEFAULT_ROOT_PREFIX = "videos,00_videos"
+DEFAULT_REDUNDANCY_PREFIX = "redundancy"
+
+# The library layout MediaVault scaffolds onto a drive that has none.
+DEFAULT_LIBRARY_ROOT = "Videos"
+DEFAULT_CATEGORIES = ["Anime", "Anime Movies", "Movies", "TV Shows"]
 
 
 def find_top_level_matches(drive_root, matches_fn):
@@ -69,10 +77,23 @@ def is_numeric_prefixed(name):
     return False
 
 
-def find_redundancy_subfolders(redundancy_root, extra_includes):
+def looks_like_category(name):
+    """
+    Is this folder name a media category we'd expect inside a library?
+
+    Accepts both naming conventions: the numeric-prefixed one ("00_Anime",
+    "01_Movies") and the plain one ("Anime", "Movies", "TV Shows"). The plain
+    case reuses tagging.py's category matching, so anything it can derive a
+    tag from counts - which keeps non-media folders that happen to sit at the
+    same level ("Desktop", "Google Drive") out.
+    """
+    return is_numeric_prefixed(name) or bool(tagging.default_tags_for_category(name))
+
+
+def find_redundancy_subfolders(redundancy_root, extra_includes, log=print):
     """Returns the list of subfolders inside a redundancy root that should be
-    scanned. Only numeric-prefixed folders (00_Anime, 01_Movies, ...) are
-    included by default. extra_includes is a set of lowercase folder names
+    scanned. Only recognizable media categories are included by default (see
+    looks_like_category). extra_includes is a set of lowercase folder names
     that should additionally be included regardless of naming convention."""
     found = []
     try:
@@ -80,12 +101,12 @@ def find_redundancy_subfolders(redundancy_root, extra_includes):
             for entry in entries:
                 if not entry.is_dir(follow_symlinks=False):
                     continue
-                if is_numeric_prefixed(entry.name) or entry.name.lower() in extra_includes:
+                if looks_like_category(entry.name) or entry.name.lower() in extra_includes:
                     found.append(entry.path)
                 else:
-                    print(f"  Skipping non-media subfolder inside redundancy: {entry.name}")
+                    log(f"  Skipping non-media subfolder inside redundancy: {entry.name}")
     except OSError as e:
-        print(f"Warning: couldn't list {redundancy_root}: {e}")
+        log(f"Warning: couldn't list {redundancy_root}: {e}")
     return found
 
 
@@ -195,7 +216,7 @@ def scan_drive(drive_root, root_prefix, redundancy_prefix, redundancy_include=No
         # inside the redundancy root.
         subfolders = find_redundancy_subfolders(red_root, extra_includes)
         if not subfolders:
-            print(f"  Warning: no numeric-prefixed subfolders found in {red_root}. "
+            print(f"  Warning: no recognizable category subfolders found in {red_root}. "
                   f"Use --redundancy-include to add non-standard folder names.")
             continue
 
@@ -223,16 +244,328 @@ def scan_drive(drive_root, root_prefix, redundancy_prefix, redundancy_include=No
 def seed_default_tags(drive_id, nodes):
     """For every title (depth==2 dir or file), auto-tag it based on its
     category folder's name - but only if it has no tags yet
-    (see db.ensure_default_tags).
+    (see db.seed_default_tags_bulk).
     Depth-2 files are movie/episode files sitting directly inside a category
     folder (e.g. 01_Movies/SomeMovie.mkv) and should also be auto-tagged."""
     by_tmp_id = {n["tmp_id"]: n for n in nodes}
+    pairs = []
     for n in nodes:
         if n["depth"] == 2:
             parent = by_tmp_id.get(n["parent_tmp_id"])
             category_name = parent["name"] if parent else ""
-            defaults = tagging.default_tags_for_category(category_name)
-            db.ensure_default_tags(drive_id, n["rel_path"], defaults)
+            pairs.append((n["rel_path"], tagging.default_tags_for_category(category_name)))
+    db.seed_default_tags_bulk(drive_id, pairs)
+
+
+def resolve_label(drive_id, drive_root, label=None):
+    """
+    Works out what to call this drive: an explicit label wins, then whatever
+    it was called on a previous scan, then the Windows volume label, then
+    just the drive letter. Returns (label, how_we_got_it).
+    """
+    if label:
+        return label, "provided"
+
+    existing = {d["drive_id"]: d["label"] for d in db.get_all_drives()}
+    remembered = existing.get(drive_id)
+    if remembered:
+        return remembered, "remembered from a previous scan"
+
+    drive_letter = os.path.splitdrive(drive_root)[0]  # e.g. "D:"
+    vol_label = driveid.get_windows_volume_label(drive_root)
+    if vol_label:
+        auto = f"{vol_label} ({drive_letter})" if drive_letter else vol_label
+    else:
+        auto = drive_letter or drive_root
+    return auto, "auto-detected - pass --label to set a custom name"
+
+
+def remembered_scan_options(drive_id):
+    """
+    The scan options this drive was last scanned with, as a dict of keyword
+    arguments for scan_and_store. Empty if the drive is new or predates the
+    options being stored.
+
+    This is what stops a rescan started from the dashboard from silently
+    falling back to the defaults and dropping folders that were only indexed
+    because of a --redundancy-include.
+    """
+    drive = db.get_drive(drive_id)
+    if not drive:
+        return {}
+
+    options = {}
+    if drive.get("root_prefix"):
+        options["root_prefix"] = drive["root_prefix"]
+    if drive.get("redundancy_prefix") is not None:
+        options["redundancy_prefix"] = drive["redundancy_prefix"]
+    if drive.get("redundancy_include"):
+        options["redundancy_include"] = [
+            n for n in drive["redundancy_include"].split(",") if n
+        ]
+    return options
+
+
+def scan_and_store(drive_path, label=None, root_prefix=DEFAULT_ROOT_PREFIX,
+                   redundancy_prefix=DEFAULT_REDUNDANCY_PREFIX, redundancy_include=None,
+                   log=None):
+    """
+    Scan one drive and write it to the database. This is the single entry
+    point used by the CLI below, by watch_drives.py, and by the dashboard's
+    scan endpoint - so all three behave identically.
+
+    log: optional callable taking one string, for progress output. Defaults
+    to print() for CLI use; the web endpoint passes a collector instead.
+
+    Returns a summary dict. Raises ValueError if the path isn't a mounted
+    directory, so callers can report it however suits them.
+    """
+    log = log or print
+
+    drive_root = os.path.abspath(drive_path)
+    if not os.path.isdir(drive_root):
+        raise ValueError(f"'{drive_root}' is not a directory or is not currently connected.")
+
+    redundancy_include = redundancy_include or []
+    prefixes_display = ", ".join(f"'{p.strip()}'" for p in root_prefix.split(",") if p.strip())
+    include_display = (
+        f", extra redundancy inclusions: {redundancy_include}" if redundancy_include else ""
+    )
+    log(f"Scanning {drive_root} "
+        f"(library folders starting with {prefixes_display}, "
+        f"redundancy folders containing '{redundancy_prefix}'{include_display}) ...")
+
+    total, used, free = shutil.disk_usage(drive_root)
+    drive_id = driveid.get_drive_id(drive_root, total)
+
+    nodes, library_roots, redundancy_roots = scan_drive(
+        drive_root, root_prefix, redundancy_prefix, redundancy_include
+    )
+
+    if not library_roots and not redundancy_roots:
+        log(f"Warning: no top-level folder starting with {prefixes_display} "
+            f"or containing '{redundancy_prefix}' found on this drive. Nothing indexed.")
+
+    db.init_db()
+    label, label_source = resolve_label(drive_id, drive_root, label)
+
+    scan_options = {
+        "root_prefix": root_prefix,
+        "redundancy_prefix": redundancy_prefix,
+        "redundancy_include": ",".join(redundancy_include),
+    }
+    db.upsert_drive(drive_id, label, total, used, free, drive_root, scan_options)
+    db.replace_nodes(drive_id, nodes)
+    seed_default_tags(drive_id, nodes)
+
+    summary = {
+        "drive_id": drive_id,
+        "label": label,
+        "label_source": label_source,
+        "path": drive_root,
+        "total_bytes": total,
+        "used_bytes": used,
+        "free_bytes": free,
+        "library_roots": [os.path.basename(r) for r in library_roots],
+        "redundancy_roots": [os.path.basename(r) for r in redundancy_roots],
+        "dir_count": sum(1 for n in nodes if n["is_dir"]),
+        "file_count": sum(1 for n in nodes if not n["is_dir"]),
+    }
+
+    log(f"Drive: {label}  [{label_source}]  (id: {drive_id})")
+    log(f"Capacity: {used / 2**30:.1f} GB used / {total / 2**30:.1f} GB total "
+        f"({free / 2**30:.1f} GB free)")
+    log(f"Library folders: {summary['library_roots'] or 'none'}")
+    log(f"Redundancy folders: {summary['redundancy_roots'] or 'none'}")
+    log(f"Indexed {summary['dir_count']} folders, {summary['file_count']} files.")
+    return summary
+
+
+def list_mounted_roots():
+    """Every currently mounted drive root, e.g. {'C:\\\\', 'D:\\\\', ...}."""
+    if os.name != "nt":
+        return set()
+    try:
+        import ctypes
+        mask = ctypes.windll.kernel32.GetLogicalDrives()
+    except Exception:
+        return set()
+    return {f"{chr(ord('A') + i)}:\\" for i in range(26) if mask & (1 << i)}
+
+
+_connected_cache = {"checked_at": 0.0, "drives": {}}
+CONNECTED_CACHE_SECONDS = 5.0
+
+
+def get_connected_drives(max_age=CONNECTED_CACHE_SECONDS):
+    """
+    Which known drives are plugged in right now: {drive_id: root_path}.
+
+    Reads the marker file from every mounted volume. That is the only
+    reliable answer, because last_seen_path from the previous scan can be
+    stale, or the letter may now belong to a different drive entirely.
+
+    Results are cached for a few seconds. Search calls this on every
+    keystroke, and hitting all 26 possible drive letters each time would
+    spin up sleeping external drives for no reason.
+    """
+    now = time.monotonic()
+    if now - _connected_cache["checked_at"] < max_age:
+        return _connected_cache["drives"]
+
+    found = {}
+    for root in list_mounted_roots():
+        marker = os.path.join(root, driveid.MARKER_NAME)
+        try:
+            with open(marker, "r") as f:
+                drive_id = f.read().strip()
+            if drive_id:
+                found[drive_id] = root
+        except OSError:
+            continue
+
+    _connected_cache["checked_at"] = now
+    _connected_cache["drives"] = found
+    return found
+
+
+def drive_letter_for(root_path):
+    """'D:\\' -> 'D:'. Returns None if there is no letter to show."""
+    if not root_path:
+        return None
+    return os.path.splitdrive(root_path)[0] or None
+
+
+def find_mounted_drive(drive_id, max_age=CONNECTED_CACHE_SECONDS):
+    """Where this drive is plugged in right now, or None if it is not."""
+    return get_connected_drives(max_age).get(drive_id)
+
+
+# GetDriveTypeW return values we are willing to scan.
+DRIVE_REMOVABLE = 2
+DRIVE_FIXED = 3
+SCANNABLE_DRIVE_TYPES = {DRIVE_REMOVABLE, DRIVE_FIXED}
+
+
+def get_drive_type(root_path):
+    """Windows drive type number, or None off Windows. 4 is a network share,
+    5 a CD-ROM, both of which we skip."""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        return ctypes.windll.kernel32.GetDriveTypeW(ctypes.c_wchar_p(root_path))
+    except Exception:
+        return None
+
+
+def has_library_folders(drive_root, root_prefix=DEFAULT_ROOT_PREFIX,
+                        redundancy_prefix=DEFAULT_REDUNDANCY_PREFIX):
+    """Does this drive have anything MediaVault would index?"""
+    prefixes = [p.strip().lower() for p in root_prefix.split(",") if p.strip()]
+    if find_top_level_matches(drive_root, lambda n: any(n.lower().startswith(p) for p in prefixes)):
+        return True
+    if redundancy_prefix and find_top_level_matches(
+        drive_root, lambda n: redundancy_prefix.lower() in n.lower()
+    ):
+        return True
+    return False
+
+
+def find_scannable_drives():
+    """
+    Connected drives worth scanning, as a list of dicts with root, drive_id
+    (None if unknown), and reason.
+
+    A drive qualifies if MediaVault already knows it, or if it has a library
+    or redundancy folder on it. Everything else is left alone, so scanning
+    does not create empty entries for the system drive or for a USB stick
+    that happens to be plugged in. Network drives and optical drives are
+    skipped outright.
+    """
+    known = {d["drive_id"]: d for d in db.get_all_drives()}
+    connected = get_connected_drives(max_age=0)
+    by_root = {root: drive_id for drive_id, root in connected.items()}
+
+    found = []
+    for root in sorted(list_mounted_roots()):
+        drive_type = get_drive_type(root)
+        if drive_type is not None and drive_type not in SCANNABLE_DRIVE_TYPES:
+            continue
+
+        drive_id = by_root.get(root)
+        if drive_id and drive_id in known:
+            found.append({"root": root, "drive_id": drive_id,
+                          "label": known[drive_id]["label"], "reason": "known drive"})
+            continue
+
+        try:
+            if has_library_folders(root):
+                found.append({"root": root, "drive_id": drive_id,
+                              "label": None, "reason": "has a library folder"})
+        except OSError:
+            continue
+
+    return found
+
+
+def find_setup_candidates():
+    """
+    Connected drives that do NOT have the folder layout yet.
+
+    These are the drives the dashboard can offer to set up. A drive with no
+    library folder is never scanned, so it does not appear in the database at
+    all, which is why this looks at mounted volumes rather than known drives.
+    """
+    known = {d["drive_id"] for d in db.get_all_drives()}
+    connected = get_connected_drives(max_age=0)
+    by_root = {root: drive_id for drive_id, root in connected.items()}
+
+    candidates = []
+    for root in sorted(list_mounted_roots()):
+        drive_type = get_drive_type(root)
+        if drive_type is not None and drive_type not in SCANNABLE_DRIVE_TYPES:
+            continue
+        try:
+            if has_library_folders(root):
+                continue
+        except OSError:
+            continue
+
+        drive_id = by_root.get(root)
+        volume_label, _serial = driveid.get_volume_info(root)
+        # Letter and name are kept apart so the UI can lay them out in
+        # columns. Joining them here is what made the letter appear twice.
+        candidates.append({
+            "root": root,
+            "drive_id": drive_id,
+            "letter": drive_letter_for(root) or root,
+            "name": volume_label or "(no volume label)",
+            "known": drive_id in known if drive_id else False,
+            "removable": drive_type == DRIVE_REMOVABLE,
+        })
+    return candidates
+
+
+def create_library_structure(drive_root, root_name=DEFAULT_LIBRARY_ROOT,
+                             categories=None):
+    """
+    Create the expected Videos/<category> tree on a drive that has none.
+
+    Never touches or overwrites anything that already exists - os.makedirs
+    with exist_ok means an existing folder is simply left alone, so this is
+    safe to run against a drive that's partway set up. Returns the list of
+    folders it actually created (relative paths), which may be empty.
+    """
+    categories = categories or DEFAULT_CATEGORIES
+    created = []
+    lib_root = os.path.join(drive_root, root_name)
+    for category in [None] + list(categories):
+        path = lib_root if category is None else os.path.join(lib_root, category)
+        if not os.path.isdir(path):
+            os.makedirs(path, exist_ok=True)
+            created.append(os.path.relpath(path, drive_root))
+    return created
 
 
 def main():
@@ -241,7 +574,7 @@ def main():
     parser.add_argument("--label", help="Human-readable name for this drive (e.g. 'Seagate 4TB Blue')")
     parser.add_argument(
         "--root-prefix",
-        default="videos,00_videos",
+        default=DEFAULT_ROOT_PREFIX,
         help="Case-insensitive comma-separated prefixes for top-level library folders to scan "
              "(default: 'videos,00_videos', matches 'Videos', 'Videos_SSD1', '00_Videos', "
              "'00_Videos_SSD1', etc.). Pass a single prefix to override, or multiple "
@@ -249,7 +582,7 @@ def main():
     )
     parser.add_argument(
         "--redundancy-prefix",
-        default="redundancy",
+        default=DEFAULT_REDUNDANCY_PREFIX,
         help="Case-insensitive substring for top-level backup/redundancy folders (default: 'redundancy', "
              "matches '99_Redundancy', 'Redundancy_Backup', etc.). Pass '' to disable.",
     )
@@ -262,61 +595,22 @@ def main():
     )
     args = parser.parse_args()
 
-    drive_root = os.path.abspath(args.drive_path)
-    if not os.path.isdir(drive_root):
-        print(f"Error: '{drive_root}' is not a directory or is not currently connected.")
+    print("  Note: inside redundancy folders, only subfolders that look like media "
+          "categories\n  (Anime, Movies, TV Shows, or the numbered 00_Anime form) "
+          "are scanned by default.")
+
+    try:
+        scan_and_store(
+            args.drive_path,
+            label=args.label,
+            root_prefix=args.root_prefix,
+            redundancy_prefix=args.redundancy_prefix,
+            redundancy_include=[n.strip() for n in args.redundancy_include.split(",") if n.strip()],
+        )
+    except ValueError as e:
+        print(f"Error: {e}")
         sys.exit(1)
 
-    redundancy_include = [n.strip() for n in args.redundancy_include.split(",") if n.strip()]
-
-    prefixes_display = ", ".join(f"'{p.strip()}'" for p in args.root_prefix.split(",") if p.strip())
-    include_display = f", extra redundancy inclusions: {redundancy_include}" if redundancy_include else ""
-    print(f"Scanning {drive_root} "
-          f"(library folders starting with {prefixes_display}, "
-          f"redundancy folders containing '{args.redundancy_prefix}'{include_display}) ...")
-    print("  Note: inside redundancy folders, only numeric-prefixed subfolders "
-          "(e.g. 00_Anime, 01_Movies) are scanned by default.")
-
-    total, used, free = shutil.disk_usage(drive_root)
-    drive_id = driveid.get_drive_id(drive_root, total)
-
-    nodes, library_roots, redundancy_roots = scan_drive(
-        drive_root, args.root_prefix, args.redundancy_prefix, redundancy_include
-    )
-
-    if not library_roots and not redundancy_roots:
-        print(f"Warning: no top-level folder starting with {prefixes_display} "
-              f"or containing '{args.redundancy_prefix}' found on this drive.")
-        print("Nothing indexed. Use --root-prefix / --redundancy-prefix to match your naming.")
-
-    db.init_db()
-
-    label = args.label
-    label_source = "provided"
-    if not label:
-        existing = {d["drive_id"]: d["label"] for d in db.get_all_drives()}
-        label = existing.get(drive_id)
-        label_source = "remembered from a previous scan"
-        if not label:
-            drive_letter = os.path.splitdrive(drive_root)[0]  # e.g. "D:"
-            vol_label = driveid.get_windows_volume_label(drive_root)
-            if vol_label:
-                label = f"{vol_label} ({drive_letter})" if drive_letter else vol_label
-            else:
-                label = drive_letter or drive_root
-            label_source = "auto-detected - pass --label to set a custom name"
-
-    db.upsert_drive(drive_id, label, total, used, free, drive_root)
-    db.replace_nodes(drive_id, nodes)
-    seed_default_tags(drive_id, nodes)
-
-    print(f"Drive: {label}  [{label_source}]  (id: {drive_id})")
-    print(f"Capacity: {used / 2**30:.1f} GB used / {total / 2**30:.1f} GB total "
-          f"({free / 2**30:.1f} GB free)")
-    print(f"Library folders: {[os.path.basename(r) for r in library_roots] or 'none'}")
-    print(f"Redundancy folders: {[os.path.basename(r) for r in redundancy_roots] or 'none'}")
-    print(f"Indexed {sum(1 for n in nodes if n['is_dir'])} folders, "
-          f"{sum(1 for n in nodes if not n['is_dir'])} files.")
     print("Done. Open the dashboard to view (py dashboard.py).")
 
 
