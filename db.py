@@ -81,6 +81,12 @@ ADDED_DRIVE_COLUMNS = {
     "root_prefix": "TEXT",
     "redundancy_prefix": "TEXT",
     "redundancy_include": "TEXT",
+    # 'ssd', 'hdd', 'usb' or NULL. NULL means work it out from the volume
+    # label each time; a value here is a choice made by hand and always wins.
+    "drive_type": "TEXT",
+    # 1 = deliberately filled up and treated as read-only archive, so the
+    # low space warning is not useful and is suppressed.
+    "cold_storage": "INTEGER NOT NULL DEFAULT 0",
 }
 
 
@@ -653,6 +659,36 @@ def compare_copies(item, other, children_of):
             "detail": f"{round(100 * ratio)}% of the size"}
 
 
+def redundancy_summary(drive_id):
+    """
+    What is actually in this drive's redundancy folder.
+
+    'Has a redundancy folder' on its own is not useful, because the folder is
+    often there with empty category folders inside. What matters is whether
+    real backups are sitting in it, so this counts titles rather than
+    folders.
+
+    Returns {'has_root': bool, 'titles': int, 'size_bytes': int}.
+    """
+    conn = get_conn()
+    root = conn.execute(
+        "SELECT 1 FROM nodes WHERE drive_id = ? AND root_type = 'redundancy' "
+        "AND depth = 0 LIMIT 1",
+        (drive_id,),
+    ).fetchone()
+    row = conn.execute(
+        "SELECT COUNT(*) AS titles, COALESCE(SUM(size_bytes), 0) AS bytes "
+        "FROM nodes WHERE drive_id = ? AND root_type = 'redundancy' AND depth = 2",
+        (drive_id,),
+    ).fetchone()
+    conn.close()
+    return {
+        "has_root": root is not None,
+        "titles": row["titles"],
+        "size_bytes": row["bytes"],
+    }
+
+
 def get_tags_for_drive(drive_id):
     """Returns {rel_path: [tag, tag, ...]} for every tagged title on a drive."""
     conn = get_conn()
@@ -740,6 +776,27 @@ def get_all_distinct_tags():
     rows = conn.execute("SELECT DISTINCT tag FROM tags ORDER BY tag").fetchall()
     conn.close()
     return [r["tag"] for r in rows]
+
+
+def set_drive_type(drive_id, drive_type):
+    """
+    Record how a drive should be treated. None goes back to working it out
+    from the volume label.
+    """
+    conn = get_conn()
+    conn.execute("UPDATE drives SET drive_type = ? WHERE drive_id = ?", (drive_type, drive_id))
+    conn.commit()
+    conn.close()
+
+
+def set_drive_cold_storage(drive_id, cold_storage):
+    """Kept separate from set_drive_type so toggling one never clears the
+    other."""
+    conn = get_conn()
+    conn.execute("UPDATE drives SET cold_storage = ? WHERE drive_id = ?",
+                 (1 if cold_storage else 0, drive_id))
+    conn.commit()
+    conn.close()
 
 
 def set_drive_label(drive_id, label):

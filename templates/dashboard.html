@@ -146,11 +146,23 @@
   .scan-btn:hover{ background:rgba(79,209,197,0.22); }
   .scan-btn:disabled{ opacity:0.55; cursor:default; }
 
+  /* Pinned to the viewport, not sticky. Sticky only holds an element inside
+     its parent and never lifts it above where it naturally sits, so a panel
+     near the end of the page simply scrolled away. A running job has to stay
+     visible wherever you are, which is the whole reason minimise exists. */
   .scan-panel{
-    display:none; margin-top:10px; background:var(--panel-raised);
-    border:1px solid var(--line); border-radius:10px; padding:14px 16px;
+    display:none; position:fixed; right:20px; bottom:20px; z-index:80;
+    width:min(560px, calc(100vw - 40px));
+    background:var(--panel-raised); border:1px solid var(--accent-dim);
+    border-radius:10px; padding:14px 16px;
+    box-shadow:0 18px 44px rgba(0,0,0,0.6);
+    max-height:min(70vh, calc(100vh - 40px)); overflow-y:auto;
   }
   .scan-panel.show{ display:block; }
+  /* Two jobs cannot run at once, but if both panels are somehow open the
+     second sits above the first rather than on top of it. */
+  .move-panel{ bottom:20px; }
+  .scan-panel.show ~ .move-panel.show{ bottom:calc(20px + 40vh); }
   .scan-head{
     display:flex; justify-content:space-between; align-items:center;
     font-size:13px; color:var(--text); margin-bottom:10px;
@@ -210,6 +222,150 @@
     background:rgba(242,166,90,0.12); color:var(--warn);
   }
   .setup-empty{ font-size:12.5px; color:var(--text-faint); padding:6px 0; }
+
+  /* ---- drive type and space rules ---- */
+  .type-badge{
+    display:inline-block; font-family:'IBM Plex Mono',monospace; font-size:10px;
+    letter-spacing:0.06em; padding:2px 7px; border-radius:4px; margin-left:8px;
+    vertical-align:middle; border:1px solid var(--line); color:var(--text-faint);
+  }
+  .type-badge.type-ssd{ color:#7DD3FC; border-color:rgba(125,211,252,0.35); }
+  .type-badge.type-hdd{ color:#C4B5FD; border-color:rgba(196,181,253,0.35); }
+  .type-badge.type-usb{ color:#FCD34D; border-color:rgba(252,211,77,0.35); }
+  .type-badge.type-external{ color:#FCD34D; border-color:rgba(252,211,77,0.35); }
+  .badge.cold{ background:rgba(125,211,252,0.12); color:#7DD3FC; border:1px solid rgba(125,211,252,0.4); }
+
+  .space-note{
+    padding:11px 20px; font-size:12.5px; line-height:1.6;
+    border-bottom:1px solid var(--line);
+  }
+  .space-note.warn{ background:rgba(242,166,90,0.07); color:#F0C89A; }
+  .space-note.warn b{ color:var(--warn); }
+  .space-note.critical{ background:rgba(232,96,76,0.09); color:#F0A99E; }
+  .space-note.critical b{ color:var(--crit); }
+
+  .drive-settings{
+    display:flex; align-items:center; gap:6px; flex-wrap:wrap;
+    padding:10px 20px; border-bottom:1px solid var(--line);
+    background:rgba(255,255,255,0.012);
+  }
+  .ds-label{
+    font-family:'IBM Plex Mono',monospace; font-size:10.5px; letter-spacing:0.06em;
+    text-transform:uppercase; color:var(--text-faint); margin-right:2px;
+  }
+  .ds-chip{
+    background:var(--panel); border:1px solid var(--line); color:var(--text-dim);
+    border-radius:14px; padding:3px 11px; font-size:11.5px; cursor:pointer;
+    font-family:'IBM Plex Sans',sans-serif;
+  }
+  .ds-chip:hover{ border-color:var(--accent-dim); }
+  .ds-chip.active{ background:rgba(79,209,197,0.14); border-color:var(--accent); color:var(--accent); }
+  .ds-sep{ width:1px; height:16px; background:var(--line); margin:0 6px; }
+  .ds-toggle{
+    display:inline-flex; align-items:center; gap:6px; font-size:11.5px;
+    color:var(--text-dim); cursor:pointer;
+  }
+  .ds-toggle input{ cursor:pointer; margin:0; }
+
+  /* ---- move target picker ---- */
+  .mv-targets{ display:flex; flex-direction:column; gap:3px; margin-bottom:14px; }
+  .mv-target{
+    display:grid; grid-template-columns:auto 46px minmax(0,1fr) auto auto auto; gap:9px;
+    align-items:center; padding:9px 11px; border-radius:7px; cursor:pointer;
+    border:1px solid transparent; font-size:13px;
+  }
+  .mv-target > span:nth-child(3){ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .mv-flags{ display:flex; gap:4px; flex-wrap:nowrap; }
+  .mv-flag{
+    font-size:10px; padding:2px 7px; border-radius:10px; white-space:nowrap;
+    border:1px solid var(--line); color:var(--text-faint);
+  }
+  .mv-flag.tag-ext{ color:#FCD34D; border-color:rgba(252,211,77,0.35); }
+  .mv-flag.tag-red{ color:#4ADE80; border-color:rgba(74,222,128,0.35); }
+  .mv-flag.tag-type{ color:var(--text-faint); }
+  .mv-target:hover{ background:rgba(255,255,255,0.03); }
+  .mv-target.chosen{ background:rgba(79,209,197,0.12); border-color:var(--accent); }
+  .mv-target .mv-letter{ font-family:'IBM Plex Mono',monospace; color:var(--accent); font-size:12px; }
+  .mv-target .mv-free{ font-family:'IBM Plex Mono',monospace; font-size:11.5px; color:var(--text-dim); }
+  .mv-target .mv-warn{ font-size:10.5px; color:var(--warn); }
+  .mv-target.tight{ opacity:0.65; }
+  .mv-empty{ font-size:12.5px; color:var(--text-faint); padding:8px 0; }
+
+  /* ---- minimised job dock ----
+     A running job is never hidden outright, only shrunk to a pill that
+     stays put until it finishes and is clicked. */
+  .job-dock{
+    position:fixed; right:20px; bottom:20px; z-index:90;
+    display:flex; flex-direction:column; gap:8px; align-items:flex-end;
+  }
+  .dock-pill{
+    display:flex; align-items:center; gap:9px;
+    background:var(--panel-raised); border:1px solid var(--accent-dim);
+    color:var(--text); border-radius:22px; padding:9px 15px 9px 12px;
+    font-size:12.5px; cursor:pointer; font-family:'IBM Plex Sans',sans-serif;
+    box-shadow:0 10px 30px rgba(0,0,0,0.5);
+  }
+  .dock-pill:hover{ border-color:var(--accent); }
+  .dock-pill.done{ border-color:var(--accent); }
+  .dock-pill.failed{ border-color:var(--crit); }
+  .dock-pct{ color:var(--accent); font-size:11.5px; }
+  .dock-spinner{
+    width:11px; height:11px; border-radius:50%; flex-shrink:0;
+    border:2px solid var(--accent-dim); border-top-color:var(--accent);
+    animation:dock-spin 0.9s linear infinite;
+  }
+  .dock-pill.done .dock-spinner{
+    animation:none; border-color:var(--accent); background:var(--accent);
+  }
+  .dock-pill.failed .dock-spinner{
+    animation:none; border-color:var(--crit); background:var(--crit);
+  }
+  @keyframes dock-spin{ to{ transform:rotate(360deg); } }
+
+  /* ---- progress within the current title ---- */
+  .job-current{
+    margin-top:10px; padding:9px 11px; background:var(--bg);
+    border:1px solid var(--line); border-radius:7px; font-size:12px;
+  }
+  .job-current-top{
+    display:flex; justify-content:space-between; gap:10px;
+    color:var(--text-dim); margin-bottom:7px;
+  }
+  .job-current-name{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .job-current-nums{ font-family:'IBM Plex Mono',monospace; color:var(--text-faint); white-space:nowrap; }
+  .job-current-bar{ height:4px; background:var(--seg-empty); border-radius:2px; overflow:hidden; }
+  .job-current-fill{ height:100%; width:0%; background:var(--accent); transition:width .3s ease-out; }
+
+  /* ---- settings ---- */
+  .set-section{ margin-bottom:18px; }
+  .set-label{
+    font-family:'IBM Plex Mono',monospace; font-size:10.5px; letter-spacing:0.06em;
+    text-transform:uppercase; color:var(--text-faint); margin-bottom:8px;
+  }
+  .set-tools{ display:flex; flex-direction:column; gap:3px; }
+  .set-tool{
+    display:grid; grid-template-columns:auto 1fr auto; gap:10px; align-items:center;
+    padding:9px 11px; border-radius:7px; cursor:pointer; font-size:13px;
+    border:1px solid transparent;
+  }
+  .set-tool:hover{ background:rgba(255,255,255,0.03); }
+  .set-tool.chosen{ background:rgba(79,209,197,0.12); border-color:var(--accent); }
+  .set-tool.unavailable{ opacity:0.5; }
+  .set-tool .st-name{ color:var(--text); }
+  .set-tool .st-note{
+    font-size:11px; color:var(--text-faint); grid-column:2 / -1;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .set-tool .st-missing{ font-size:10.5px; color:var(--warn); white-space:nowrap; }
+  .set-path-row{ display:flex; gap:8px; }
+  .set-path{ flex:1; width:auto; font-family:'IBM Plex Mono',monospace; font-size:11.5px; }
+  .set-note{ font-size:11.5px; color:var(--text-faint); margin-top:7px; line-height:1.55; }
+  .set-effective{
+    font-size:12px; color:var(--text-dim); background:var(--bg);
+    border:1px solid var(--line); border-radius:7px; padding:10px 12px; margin-bottom:14px;
+  }
+  .set-effective b{ color:var(--accent); }
+  .set-effective.warn b{ color:var(--warn); }
 
   /* ---- connected / disconnected indicators ---- */
   .conn-dot{
@@ -280,12 +436,16 @@
 
   .drive-btn{
     background:none; border:none; color:var(--text-faint); cursor:pointer;
-    font-size:12px; padding:2px 5px; border-radius:4px; vertical-align:middle;
+    font-size:12px; padding:3px 5px; border-radius:4px; vertical-align:middle;
     opacity:0; transition:opacity .12s, color .12s;
+    display:inline-flex; align-items:center; line-height:0;
   }
+  .drive-btn .ic{ width:13px; height:13px; display:block; }
   .drive-head:hover .drive-btn{ opacity:1; }
   .drive-btn:hover{ color:var(--accent); background:rgba(255,255,255,0.05); }
-  .drive-btn.delete-btn:hover{ color:var(--crit); }
+  /* Same treatment as the bins in the tree: red at rest, brighter on hover. */
+  .drive-btn.delete-btn{ color:#B4564A; }
+  .drive-btn.delete-btn:hover{ color:#FF6B58; background:rgba(232,96,76,0.18); }
   .drive-name-input{
     display:none; background:var(--panel-raised); border:1px solid var(--accent-dim);
     border-radius:6px; padding:3px 9px; font-size:16px; font-weight:600; color:var(--text);
@@ -429,6 +589,10 @@
   }
   .node-btn .ic{ width:13px; height:13px; display:block; }
   .node-btn.open-btn:hover{ color:var(--accent); background:rgba(79,209,197,0.14); }
+  /* Amber for move: it changes where something lives. */
+  .node-btn.move-btn:hover{ color:#FBBF24; background:rgba(251,191,36,0.16); }
+  /* Green for back up, matching the shield it produces. */
+  .node-btn.copy-btn:hover{ color:#4ADE80; background:rgba(74,222,128,0.16); }
   .node-btn.del-btn{ color:#B4564A; }
   .node-btn.del-btn:hover{ color:#FF6B58; background:rgba(232,96,76,0.18); }
 
@@ -442,7 +606,11 @@
     background:var(--panel); border:1px solid var(--line); border-radius:12px;
     padding:22px 24px; max-width:560px; width:100%;
     box-shadow:0 24px 60px rgba(0,0,0,0.6);
+    max-height:calc(100vh - 48px); overflow-y:auto;
   }
+  /* The drive picker carries badges of varying length, so let it use the
+     width it needs rather than truncating them. */
+  #move-backdrop .modal{ max-width:min(860px, 100%); }
   .modal-title{ font-size:16px; font-weight:600; margin-bottom:10px; }
   .modal-name{
     font-family:'IBM Plex Mono',monospace; font-size:12.5px; color:var(--text);
@@ -616,6 +784,7 @@
     <input id="search" type="text" placeholder="Search for a show or movie across every drive…" oninput="onSearchInput()" autocomplete="off">
     <button id="scan-btn" class="scan-btn" onclick="startScan()">Scan connected drives</button>
     <button id="setup-btn" class="scan-btn ghost" onclick="openSetup()">Set up a drive</button>
+    <button id="settings-btn" class="scan-btn ghost" onclick="openSettings()" title="Choose the program that copies files">Settings</button>
     <span class="hint mono">{{ stats.connected_count }}/{{ drives|length }} connected</span>
   </div>
 
@@ -643,8 +812,9 @@
     <div id="scan-drives" class="scan-drives"></div>
     <pre id="scan-log" class="scan-log"></pre>
     <div class="scan-actions">
-      <button class="bulk-btn ghost" onclick="hideScanPanel()">Hide</button>
-      <button id="scan-reload" class="bulk-btn apply" onclick="location.reload()" style="display:none;">Reload to see results</button>
+      <button class="bulk-btn ghost" onclick="minimiseScanPanel()">Minimise</button>
+      <button id="scan-stay" class="bulk-btn ghost" onclick="cancelScheduledReload('scan-reload','scan-stay')" style="display:none;">Stay on this page</button>
+      <button id="scan-reload" class="bulk-btn apply" onclick="reloadNow()" style="display:none;">Refresh now</button>
     </div>
   </div>
 
@@ -766,8 +936,22 @@
               title="{{ 'Open this folder' if node.is_dir else 'Play this file' }}">
         {% if node.is_dir %}{{ icon_folder() }}{% else %}{{ icon_play() }}{% endif %}
       </button>
+      {# Move and back up act on whole titles, so only depth 2 gets them. #}
+      {% if node.depth == 2 %}
+      <button class="node-btn move-btn" data-node-id="{{ node.id }}"
+              data-name="{{ node.name }}" data-size="{{ node.size_h }}"
+              data-drive-id="{{ node.drive_id }}"
+              title="Move to another drive">{{ icon_move() }}</button>
+      <button class="node-btn copy-btn" data-node-id="{{ node.id }}"
+              data-name="{{ node.name }}" data-size="{{ node.size_h }}"
+              data-drive-id="{{ node.drive_id }}"
+              title="Copy to another drive as a backup">{{ icon_copy() }}</button>
+      {% endif %}
     </span>
   {% endmacro %}
+
+  {% macro icon_move() %}<svg viewBox="0 0 16 16" class="ic" aria-hidden="true"><path d="M2 8h10.5M9 4.4L12.9 8 9 11.6" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/></svg>{% endmacro %}
+  {% macro icon_copy() %}<svg viewBox="0 0 16 16" class="ic" aria-hidden="true"><path d="M8 1.9l4.6 1.9v3.6c0 2.7-1.9 4.9-4.6 5.8-2.7-.9-4.6-3.1-4.6-5.8V3.8z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>{% endmacro %}
 
   {% macro node_danger(node) %}
     <span class="node-danger">
@@ -833,8 +1017,20 @@
           <span class="drive-name">{{ d.label }}</span>
           <input class="drive-name-input" value="{{ d.label }}" maxlength="80" autocomplete="off">
           <button class="drive-btn rename-btn" title="Rename this drive">✎</button>
-          <button class="drive-btn delete-btn" title="Forget this drive (does not touch the drive itself)">🗑</button>
-          {% if d.low_space %}<span class="badge {% if d.pct_used > 92 %}crit{% else %}warn{% endif %}">LOW SPACE</span>{% endif %}
+          <button class="drive-btn delete-btn" title="Forget this drive (does not touch the drive itself)">{{ icon_trash() }}</button>
+          <span class="type-badge type-{{ d.drive_type }}"
+                title="{{ 'Set by hand' if d.type_is_manual else 'Read from the volume label' }}. Warns below {{ d.space.threshold_pct }}% free.">{{ d.type_label }}</span>
+          {% if d.external %}
+          <span class="type-badge type-external"
+                title="Attached over {{ d.bus_type or 'USB' }}, so it can be unplugged and kept somewhere else">EXTERNAL</span>
+          {% endif %}
+          {% if d.cold_storage %}
+            <span class="badge cold" title="Kept full on purpose. Low space warnings are off.">COLD STORAGE</span>
+          {% elif d.low_space %}
+            <span class="badge {{ 'crit' if d.space.severity == 'critical' else 'warn' }}">
+              {{ d.space.free_pct }}% FREE
+            </span>
+          {% endif %}
           <div class="drive-meta">
             {% if d.connected %}
               <span class="conn-label on">connected as {{ d.current_letter }}</span>
@@ -855,6 +1051,27 @@
     </div>
 
     <div class="drive-body">
+      {% if d.space.message %}
+      <div class="space-note {{ d.space.severity }}">
+        <b>{{ d.free_h }} free ({{ d.space.free_pct }}%).</b> {{ d.space.message }}
+      </div>
+      {% endif %}
+      <div class="drive-settings">
+        <span class="ds-label">Treat as</span>
+        {% for value, text in [('ssd', 'SSD'), ('hdd', 'HDD'), ('usb', 'USB')] %}
+          <button class="ds-chip {{ 'active' if d.drive_type == value else '' }}"
+                  data-drive-id="{{ d.drive_id }}" data-type="{{ value }}">{{ text }}</button>
+        {% endfor %}
+        <button class="ds-chip {{ 'active' if not d.type_is_manual else '' }}"
+                data-drive-id="{{ d.drive_id }}" data-type=""
+                title="Work it out from the volume label">Auto</button>
+        <span class="ds-sep"></span>
+        <label class="ds-toggle" title="Kept full on purpose, read only. Turns off the low space warning.">
+          <input type="checkbox" class="cold-toggle" data-drive-id="{{ d.drive_id }}"
+                 {{ 'checked' if d.cold_storage else '' }}>
+          Cold storage
+        </label>
+      </div>
       {% if d.largest_folders %}
       <div class="largest-panel">
         <div class="lp-label">Largest folders on this drive</div>
@@ -915,8 +1132,105 @@
   <button class="bulk-btn apply" onclick="applyBulkTag('add')">Apply tag</button>
   <button class="bulk-btn remove" onclick="applyBulkTag('remove')">Remove tag</button>
   <span class="bulk-sep"></span>
+  <button class="bulk-btn apply" onclick="openMoveModal('move')">Move to drive…</button>
+  <button class="bulk-btn" onclick="openMoveModal('copy')">Back up to drive…</button>
   <button class="bulk-btn danger" onclick="openBulkDeleteModal()">Delete selected</button>
   <button class="bulk-btn ghost" onclick="clearSelection()">Clear</button>
+</div>
+
+<div id="move-backdrop" class="modal-backdrop">
+  <div class="modal">
+    <div class="modal-title">Move <span id="mv-count">0</span> title(s)</div>
+    <div class="modal-name" id="mv-names"></div>
+    <div class="modal-body">
+      Pick a drive. Each title goes into the matching category there, so Anime
+      lands in Anime and Movies in Movies.
+    </div>
+    <div id="mv-targets" class="mv-targets"></div>
+    <div class="modal-actions">
+      <button class="bulk-btn ghost" onclick="closeMoveModal()">Cancel</button>
+      <button class="bulk-btn apply" id="mv-go" onclick="startMove()" disabled>Move</button>
+    </div>
+    <div class="modal-note" id="mv-note">
+      Files are copied, checked, and only then removed from the source. If
+      anything goes wrong the original is left untouched.
+    </div>
+  </div>
+</div>
+
+<div id="move-panel" class="scan-panel move-panel">
+  <div class="scan-head">
+    <span id="move-title">Moving…</span>
+    <span id="move-elapsed" class="mono"></span>
+  </div>
+  <div class="scan-progress"><div id="move-bar" class="scan-bar"></div></div>
+  <div id="move-current" class="job-current" style="display:none;">
+    <div class="job-current-top">
+      <span class="job-current-name" id="move-current-name"></span>
+      <span class="job-current-nums" id="move-current-nums"></span>
+    </div>
+    <div class="job-current-bar"><div class="job-current-fill" id="move-current-fill"></div></div>
+  </div>
+  <div id="move-items" class="scan-drives"></div>
+  <pre id="move-log" class="scan-log"></pre>
+  <div class="scan-actions">
+    <button class="bulk-btn ghost" onclick="minimiseMovePanel()">Minimise</button>
+    <button id="move-stay" class="bulk-btn ghost" onclick="cancelScheduledReload('move-reload','move-stay')" style="display:none;">Stay on this page</button>
+    <button id="move-reload" class="bulk-btn apply" onclick="reloadNow()" style="display:none;">Refresh now</button>
+  </div>
+</div>
+
+<!-- Minimised jobs dock here rather than disappearing. An operation must
+     never run with no way to see it. -->
+<div id="settings-backdrop" class="modal-backdrop">
+  <div class="modal">
+    <div class="modal-title">Settings</div>
+
+    <div class="set-section">
+      <div class="set-label">Program used to copy and move files</div>
+      <div id="set-tools" class="set-tools"></div>
+    </div>
+
+    <div class="set-section">
+      <div class="set-label">Executable</div>
+      <div class="set-path-row">
+        <input id="set-path" class="bulk-input set-path" placeholder="No program needed for this choice" autocomplete="off">
+        <button class="bulk-btn" onclick="browseForProgram()">Browse…</button>
+      </div>
+      <div class="set-note" id="set-path-note"></div>
+    </div>
+
+    <div class="set-section">
+      <label class="ds-toggle">
+        <input type="checkbox" id="set-verify">
+        Check the copy matches the source before deleting anything
+      </label>
+      <div class="set-note">
+        Turning this off makes transfers faster and considerably less safe.
+      </div>
+    </div>
+
+    <div class="set-effective" id="set-effective"></div>
+
+    <div class="modal-actions">
+      <button class="bulk-btn ghost" onclick="closeSettings()">Cancel</button>
+      <button class="bulk-btn apply" id="set-save" onclick="saveSettings()">Save</button>
+    </div>
+    <div class="modal-note" id="set-config-path"></div>
+  </div>
+</div>
+
+<div id="job-dock" class="job-dock">
+  <button id="dock-scan" class="dock-pill" onclick="restoreScanPanel()" style="display:none;">
+    <span class="dock-spinner"></span>
+    <span class="dock-text">Scanning</span>
+    <span class="dock-pct mono"></span>
+  </button>
+  <button id="dock-move" class="dock-pill" onclick="restoreMovePanel()" style="display:none;">
+    <span class="dock-spinner"></span>
+    <span class="dock-text">Moving</span>
+    <span class="dock-pct mono"></span>
+  </button>
 </div>
 
 <footer>
@@ -1099,6 +1413,81 @@ document.addEventListener('keydown', function(e){
   });
 });
 
+/* ---------- reloading after an operation ----------
+   Anything that changes what is on disk leaves the page showing stale
+   sizes, stale free space and stale backup shields, so the page has to
+   reload. It happens on its own rather than waiting for a button, with a
+   few seconds of grace so the result can be read, and a way to stay put for
+   anyone who wants to study the log first.
+
+   What was open is remembered across the reload, so an automatic refresh
+   does not throw away where you were. */
+const RELOAD_GRACE_SECONDS = 5;
+let reloadTimer = null;
+
+function rememberViewState(){
+  try{
+    const open = [...document.querySelectorAll('.drive.open')]
+      .map(d => d.dataset.driveId);
+    sessionStorage.setItem('mv-view', JSON.stringify({
+      openDrives: open,
+      scrollY: window.scrollY
+    }));
+  } catch(e){ /* private mode, not important */ }
+}
+
+function restoreViewState(){
+  let state;
+  try{
+    state = JSON.parse(sessionStorage.getItem('mv-view') || 'null');
+    sessionStorage.removeItem('mv-view');
+  } catch(e){ return; }
+  if(!state) return;
+
+  (state.openDrives || []).forEach(id => {
+    const el = document.querySelector(`.drive[data-drive-id="${CSS.escape(id)}"]`);
+    if(el) el.classList.add('open');
+  });
+  if(state.scrollY) window.scrollTo(0, state.scrollY);
+}
+
+function reloadNow(){
+  rememberViewState();
+  location.reload();
+}
+
+/* Count down in a button, so it is obvious what is about to happen and it
+   can be stopped. */
+function scheduleReload(buttonId, cancelId){
+  let left = RELOAD_GRACE_SECONDS;
+  const button = document.getElementById(buttonId);
+  const cancel = document.getElementById(cancelId);
+  if(!button) return;
+
+  button.style.display = '';
+  if(cancel) cancel.style.display = '';
+
+  const tick = () => {
+    button.textContent = `Refreshing in ${left}\u2026`;
+    if(left <= 0){ reloadNow(); return; }
+    left -= 1;
+    reloadTimer = setTimeout(tick, 1000);
+  };
+  clearTimeout(reloadTimer);
+  tick();
+}
+
+function cancelScheduledReload(buttonId, cancelId){
+  clearTimeout(reloadTimer);
+  reloadTimer = null;
+  const button = document.getElementById(buttonId);
+  if(button) button.textContent = 'Refresh now';
+  const cancel = document.getElementById(cancelId);
+  if(cancel) cancel.style.display = 'none';
+}
+
+window.addEventListener('DOMContentLoaded', restoreViewState);
+
 /* ---------- scanning ----------
    The scan runs on the server in a background thread. This starts it, then
    polls for progress until it finishes. Polling rather than holding the
@@ -1172,8 +1561,17 @@ function finishScan(job){
   document.getElementById('scan-title').textContent = failed
     ? `Finished with ${failed} failure(s)`
     : `Finished. Scanned ${job.completed} drive(s).`;
-  document.getElementById('scan-reload').style.display = '';
   resetScanButton();
+  scanFinishedNeedsReload = true;
+  scheduleReload('scan-reload', 'scan-stay');
+
+  const pill = document.getElementById('dock-scan');
+  if(pill.style.display !== 'none'){
+    pill.classList.toggle('failed', failed > 0);
+    pill.classList.toggle('done', failed === 0);
+    pill.querySelector('.dock-text').textContent = failed ? 'Scan finished with errors' : 'Scan finished';
+    pill.querySelector('.dock-pct').textContent = 'reload';
+  }
 }
 
 function resetScanButton(){
@@ -1185,10 +1583,27 @@ function resetScanButton(){
 function showScanPanel(){
   document.getElementById('scan-panel').classList.add('show');
   document.getElementById('scan-reload').style.display = 'none';
+  document.getElementById('dock-scan').style.display = 'none';
 }
-function hideScanPanel(){
+
+/* Minimise rather than hide. The job keeps running, so it keeps a pill in
+   the dock; clicking that brings the panel back. Nothing ever runs with no
+   way to see it. */
+function minimiseScanPanel(){
   document.getElementById('scan-panel').classList.remove('show');
+  document.getElementById('dock-scan').style.display = 'flex';
 }
+function restoreScanPanel(){
+  const pill = document.getElementById('dock-scan');
+  // Once the job is over the pill is just an acknowledgement, so dismiss it.
+  if(pill.classList.contains('done') || pill.classList.contains('failed')){
+    pill.style.display = 'none';
+    if(scanFinishedNeedsReload) reloadNow();
+    return;
+  }
+  showScanPanel();
+}
+let scanFinishedNeedsReload = false;
 
 const SCAN_ICONS = {waiting: '·', scanning: '▸', done: '✓', failed: '✕'};
 
@@ -1201,8 +1616,14 @@ function renderScanJob(job){
     Math.round(job.elapsed || 0) + 's';
 
   const bar = document.getElementById('scan-bar');
-  bar.style.width = job.total ? Math.round(100 * job.completed / job.total) + '%' : '0%';
+  const pct = job.total ? Math.round(100 * job.completed / job.total) : 0;
+  bar.style.width = pct + '%';
   bar.classList.toggle('failed', job.status === 'failed');
+
+  const pill = document.getElementById('dock-scan');
+  pill.querySelector('.dock-text').textContent =
+    job.current ? 'Scanning ' + job.current : 'Scanning';
+  pill.querySelector('.dock-pct').textContent = pct + '%';
 
   const box = document.getElementById('scan-drives');
   box.innerHTML = '';
@@ -1546,9 +1967,622 @@ async function runSetup(){
       alert('Some drives could not be set up:\n\n'
           + failed.map(f => `${f.root}: ${f.error}`).join('\n'));
     }
-    location.reload();
+    reloadNow();
   }, () => { btn.disabled = false; btn.textContent = 'Create folders'; });
 }
+
+/* ---------- settings ----------
+   The copy program is picked here rather than by editing config.json. A page
+   cannot see the real path of a file chosen in a browser dialog, so anything
+   not found automatically is chosen through a native picker opened by the
+   server, which works because the server is this machine. */
+let settingsState = null;
+/* One path per program. Sharing a single path between them meant picking
+   FastCopy showed TeraCopy's executable, which would have launched TeraCopy
+   with FastCopy's arguments. */
+let toolPaths = {};
+
+async function openSettings(){
+  document.getElementById('settings-backdrop').classList.add('show');
+  const list = document.getElementById('set-tools');
+  list.innerHTML = '<div class="set-note">Looking for copy programs…</div>';
+
+  try{
+    settingsState = await (await fetch('/api/settings')).json();
+  } catch(e){
+    list.innerHTML = '<div class="set-note">Could not reach the server.</div>';
+    return;
+  }
+
+  // Seed each program's path from what was detected, then let whatever is
+  // saved override it for the program that is actually selected.
+  toolPaths = {};
+  (settingsState.tools || []).forEach(t => {
+    if(t.path) toolPaths[t.key] = t.path;
+  });
+  const saved = settingsState.settings;
+  const savedPath = saved.copy_tool_path
+    || (saved.copy_tool === 'teracopy' ? saved.teracopy_path : '');
+  if(savedPath && needsPath(saved.copy_tool)){
+    toolPaths[saved.copy_tool] = savedPath;
+  }
+
+  renderSettings();
+}
+
+function renderSettings(){
+  const s = settingsState;
+  const chosen = s.settings.copy_tool || 'auto';
+  const list = document.getElementById('set-tools');
+  list.innerHTML = '';
+
+  s.tools.forEach(tool => {
+    const row = document.createElement('div');
+    row.className = 'set-tool' + (tool.key === chosen ? ' chosen' : '')
+                  + (tool.available ? '' : ' unavailable');
+    row.dataset.key = tool.key;
+    row.dataset.path = tool.path || '';
+
+    const radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'copy-tool';
+    radio.checked = tool.key === chosen;
+
+    const name = document.createElement('span');
+    name.className = 'st-name';
+    name.textContent = tool.name;
+
+    const missing = document.createElement('span');
+    missing.className = 'st-missing';
+    if(!tool.available) missing.textContent = 'not found';
+
+    const note = document.createElement('span');
+    note.className = 'st-note';
+    note.textContent = tool.note || '';
+
+    row.append(radio, name, missing, note);
+    row.addEventListener('click', () => chooseTool(tool));
+    list.appendChild(row);
+  });
+
+  // Anything not detected can still be pointed at by hand.
+  const custom = document.createElement('div');
+  custom.className = 'set-tool' + (chosen === 'custom' ? ' chosen' : '');
+  custom.dataset.key = 'custom';
+  const cradio = document.createElement('input');
+  cradio.type = 'radio';
+  cradio.name = 'copy-tool';
+  cradio.checked = chosen === 'custom';
+  const cname = document.createElement('span');
+  cname.className = 'st-name';
+  cname.textContent = 'Another program…';
+  const cnote = document.createElement('span');
+  cnote.className = 'st-note';
+  cnote.textContent = 'Pick any copier that takes a source and a destination.';
+  custom.append(cradio, cname, document.createElement('span'), cnote);
+  custom.addEventListener('click', () => chooseTool({key: 'custom', path: null}));
+  list.appendChild(custom);
+
+  // Only show a path when the chosen program needs one, and only that
+  // program's own path.
+  document.getElementById('set-path').value =
+    needsPath(chosen) ? (toolPaths[chosen] || '') : '';
+  document.getElementById('set-verify').checked = s.settings.verify_after_copy !== false;
+  document.getElementById('set-config-path').textContent = 'Saved in ' + s.config_path;
+
+  updatePathHint(chosen);
+  updateEffective();
+}
+
+function chooseTool(tool){
+  // Keep whatever is typed against the program it was typed for, so
+  // switching away and back does not lose it.
+  const previous = settingsState.settings.copy_tool;
+  const current = document.getElementById('set-path');
+  if(current && !current.disabled && needsPath(previous)){
+    toolPaths[previous] = current.value.trim();
+  }
+  settingsState.settings.copy_tool = tool.key;
+  if(tool.path) toolPaths[tool.key] = tool.path;
+  renderSettings();
+}
+
+function needsPath(key){
+  return ['teracopy', 'fastcopy', 'custom'].includes(key);
+}
+
+function updatePathHint(chosen){
+  const input = document.getElementById('set-path');
+  const note = document.getElementById('set-path-note');
+  if(needsPath(chosen)){
+    input.disabled = false;
+    input.placeholder = 'Full path to the program';
+    note.textContent = 'Use Browse to pick it, or paste the full path.';
+  } else {
+    input.disabled = true;
+    input.placeholder = 'No program needed for this choice';
+    note.textContent = chosen === 'robocopy'
+      ? 'Robocopy comes with Windows and needs no path.'
+      : 'The built-in copier needs no path.';
+  }
+}
+
+/* Say what will actually run, not what was selected. "auto" and a missing
+   executable both resolve to something else, and showing the raw choice
+   next to a leftover path made it look as though the built-in copier was
+   running robocopy. */
+function updateEffective(){
+  const box = document.getElementById('set-effective');
+  const chosen = settingsState.settings.copy_tool;
+  const path = document.getElementById('set-path').value.trim();
+  const robocopy = (settingsState.tools || []).find(t => t.key === 'robocopy');
+  const displayName = {
+    python: 'the built-in copier',
+    robocopy: 'Robocopy',
+    teracopy: 'TeraCopy',
+    fastcopy: 'FastCopy',
+    custom: 'the program below'
+  };
+
+  box.className = 'set-effective';
+
+  if(chosen === 'python'){
+    box.innerHTML = 'Copies will use <b>the built-in copier</b>. '
+      + 'No separate program, and no progress window of its own.';
+    return;
+  }
+
+  if(chosen === 'auto'){
+    if(robocopy && robocopy.available){
+      box.innerHTML = 'Automatic: robocopy is installed, so copies will use '
+        + `<b>Robocopy</b> (${escapeHtml(robocopy.path)}).`;
+    } else {
+      box.innerHTML = 'Automatic: robocopy was not found, so copies will use '
+        + '<b>the built-in copier</b>.';
+    }
+    return;
+  }
+
+  if(chosen === 'robocopy'){
+    if(robocopy && robocopy.available){
+      box.innerHTML = `Copies will use <b>Robocopy</b> (${escapeHtml(robocopy.path)}).`;
+    } else {
+      box.className = 'set-effective warn';
+      box.innerHTML = 'Robocopy was not found on this machine, so copies would '
+        + 'fall back to <b>the built-in copier</b>.';
+    }
+    return;
+  }
+
+  // TeraCopy, FastCopy, or something chosen by hand.
+  const name = displayName[chosen] || chosen;
+  if(!path){
+    box.className = 'set-effective warn';
+    box.innerHTML = `No executable chosen for ${escapeHtml(name)}, so copies would `
+      + 'fall back to <b>the built-in copier</b>.';
+    return;
+  }
+  box.innerHTML = `Copies will use <b>${escapeHtml(name)}</b> `
+    + `(${escapeHtml(path)}), which shows its own progress window.`;
+}
+
+document.addEventListener('input', function(e){
+  if(e.target.id !== 'set-path' || !settingsState) return;
+  const chosen = settingsState.settings.copy_tool;
+  if(needsPath(chosen)) toolPaths[chosen] = e.target.value.trim();
+  updateEffective();
+});
+
+async function browseForProgram(){
+  const note = document.getElementById('set-path-note');
+  note.textContent = 'A file picker has opened. It may be behind this window.';
+  try{
+    const res = await fetch('/api/settings/browse', {method: 'POST'});
+    const data = await res.json();
+    if(!data.ok){ note.textContent = data.error || 'Could not open a file picker.'; return; }
+    if(data.cancelled){ note.textContent = 'Nothing picked.'; return; }
+    document.getElementById('set-path').value = data.path;
+    const chosen = settingsState.settings.copy_tool;
+    if(needsPath(chosen)) toolPaths[chosen] = data.path;
+    note.textContent = '';
+    updateEffective();
+  } catch(e){
+    note.textContent = 'Could not reach the server.';
+  }
+}
+
+function saveSettings(){
+  const btn = document.getElementById('set-save');
+  btn.disabled = true;
+  const chosen = settingsState.settings.copy_tool;
+  postJSON('/api/settings', {
+    copy_tool: chosen,
+    // A path only means anything for the programs that need one.
+    copy_tool_path: needsPath(chosen)
+      ? document.getElementById('set-path').value.trim() : '',
+    verify_after_copy: document.getElementById('set-verify').checked
+  }, (data) => {
+    btn.disabled = false;
+    closeSettings();
+    const names = {python: 'the built-in copier', robocopy: 'Robocopy',
+                   teracopy: 'TeraCopy', fastcopy: 'FastCopy'};
+    flashToast(data.note
+      || `Copies will use ${names[data.effective_copy_tool] || data.effective_copy_tool}`);
+  }, () => { btn.disabled = false; });
+}
+
+function closeSettings(){
+  document.getElementById('settings-backdrop').classList.remove('show');
+}
+
+document.getElementById('settings-backdrop').addEventListener('click', function(e){
+  if(e.target === this) closeSettings();
+});
+
+/* ---------- drive type and cold storage ---------- */
+document.addEventListener('click', function(e){
+  const chip = e.target.closest('.ds-chip');
+  if(!chip) return;
+  e.stopPropagation();               // do not collapse the drive panel
+  const type = chip.dataset.type || null;
+  postJSON('/api/drive/type', {drive_id: chip.dataset.driveId, drive_type: type},
+    reloadNow);
+});
+
+document.addEventListener('change', function(e){
+  const toggle = e.target.closest('.cold-toggle');
+  if(!toggle) return;
+  // Deliberately does not send drive_type: leaving the key out tells the
+  // server to keep whatever type is already set.
+  postJSON('/api/drive/type',
+    {drive_id: toggle.dataset.driveId, cold_storage: toggle.checked},
+    reloadNow,
+    () => { toggle.checked = !toggle.checked; });
+});
+
+/* ---------- moving titles between drives ---------- */
+let moveSelection = null;      // {nodeIds, names} while the dialog is open
+let moveTargetId = null;
+let movePollTimer = null;
+
+let moveOperation = 'move';   // 'move' or 'copy'
+
+/* Both operations use the same dialog. A move goes into the target's
+   library; a copy goes into its redundancy folder and leaves the source
+   alone. */
+async function openMoveModal(operation){
+  const boxes = selectedBoxes();
+  if(boxes.length === 0) return;
+  openTransferModal(operation || 'move', boxes.map(b => ({
+    nodeId: Number(b.dataset.nodeId),
+    name: b.dataset.name,
+    size: b.dataset.size,
+    driveId: b.dataset.driveId
+  })));
+}
+
+async function openTransferModal(operation, items){
+  moveOperation = operation;
+  const copying = operation === 'copy';
+
+  moveSelection = {
+    nodeIds: items.map(i => i.nodeId),
+    names: items.map(i => i.name),
+    sizes: items.map(i => i.size),
+    driveIds: [...new Set(items.map(i => i.driveId))]
+  };
+  moveTargetId = null;
+
+  document.querySelector('#move-backdrop .modal-title').innerHTML = copying
+    ? 'Back up <span id="mv-count"></span> title(s)'
+    : 'Move <span id="mv-count"></span> title(s)';
+  document.getElementById('mv-count').textContent = items.length;
+  document.querySelector('#move-backdrop .modal-body').textContent = copying
+    ? 'Pick a drive. A copy goes into that drive\u2019s redundancy folder, under the '
+      + 'matching category. The originals stay exactly where they are.'
+    : 'Pick a drive. Each title goes into the matching category there, so Anime '
+      + 'lands in Anime and Movies in Movies.';
+  document.getElementById('mv-note').textContent = copying
+    ? 'Files are copied and checked. Nothing is removed from the source drive.'
+    : 'Files are copied, checked, and only then removed from the source. If '
+      + 'anything goes wrong the original is left untouched.';
+  document.getElementById('mv-go').textContent = copying ? 'Back up' : 'Move';
+  document.getElementById('mv-go').disabled = true;
+
+  document.getElementById('mv-names').textContent =
+    moveSelection.names.slice(0, 6).join('\n')
+    + (items.length > 6 ? `\n… and ${items.length - 6} more` : '');
+
+  const list = document.getElementById('mv-targets');
+  list.innerHTML = '<div class="mv-empty">Looking for drives…</div>';
+  document.getElementById('move-backdrop').classList.add('show');
+
+  const source = moveSelection.driveIds.length === 1 ? moveSelection.driveIds[0] : '';
+  const url = copying
+    ? '/api/copy/targets?source=' + encodeURIComponent(source)
+    : '/api/move/targets?exclude=' + encodeURIComponent(source);
+
+  let targets = [];
+  try{
+    targets = ((await (await fetch(url)).json()).targets) || [];
+  } catch(e){
+    list.innerHTML = '<div class="mv-empty">Could not reach the server.</div>';
+    return;
+  }
+
+  if(targets.length === 0){
+    list.innerHTML = '<div class="mv-empty">'
+      + (copying ? 'No other drive is connected.'
+                 : 'No other connected drive has a library folder to move into.')
+      + '</div>';
+    return;
+  }
+
+  const needed = sumSizes(moveSelection.sizes);
+  list.innerHTML = '';
+  targets.forEach(t => list.appendChild(buildMoveTarget(t, needed)));
+}
+
+/* Sizes are only available as formatted strings in the DOM, so this parses
+   them back to bytes purely to warn about an obviously too small target. */
+function sumSizes(sizeStrings){
+  const units = {B: 1, KB: 1024, MB: 1024**2, GB: 1024**3, TB: 1024**4};
+  return (sizeStrings || []).reduce((total, text) => {
+    const m = (text || '').match(/^([\d.]+)\s*(B|KB|MB|GB|TB)$/);
+    return total + (m ? parseFloat(m[1]) * units[m[2]] : 0);
+  }, 0);
+}
+
+function makeFlag(text, cls, title){
+  const el = document.createElement('span');
+  el.className = 'mv-flag ' + cls;
+  el.textContent = text;
+  el.title = title;
+  return el;
+}
+
+function buildMoveTarget(t, needed){
+  const row = document.createElement('div');
+  row.className = 'mv-target';
+  row.dataset.driveId = t.drive_id;
+
+  const radio = document.createElement('input');
+  radio.type = 'radio';
+  radio.name = 'mv-target';
+
+  const letter = document.createElement('span');
+  letter.className = 'mv-letter';
+  letter.textContent = t.letter || '';
+
+  const name = document.createElement('span');
+  name.textContent = t.label;
+
+  const free = document.createElement('span');
+  free.className = 'mv-free';
+  free.textContent = t.free_h + ' free';
+
+  // What kind of drive this is, so the right one is easy to pick: a
+  // removable drive can be stored away from the machine, and a drive that
+  // already holds backups is the obvious place to keep putting them.
+  const flags = document.createElement('span');
+  flags.className = 'mv-flags';
+  if(t.external){
+    flags.appendChild(makeFlag('external', 'tag-ext',
+      'Removable, so it can be unplugged and kept somewhere else'));
+  }
+  if(t.has_redundancy){
+    flags.appendChild(makeFlag(`backups (${t.redundancy_titles})`, 'tag-red',
+      `Already holds ${t.redundancy_titles} backed up title(s), ${t.redundancy_h}`));
+  }
+  if(t.type_label){
+    flags.appendChild(makeFlag(t.type_label, 'tag-type', 'Drive type'));
+  }
+
+  const warn = document.createElement('span');
+  warn.className = 'mv-warn';
+  if(needed && t.free_bytes && needed > t.free_bytes){
+    warn.textContent = 'not enough room';
+    row.classList.add('tight');
+  } else if(t.same_drive){
+    // Worth saying plainly: this guards against deleting it by accident,
+    // not against the drive failing.
+    warn.textContent = 'same drive, not disk failure protection';
+  } else if(t.cold_storage){
+    warn.textContent = 'cold storage';
+  } else if(t.space && t.space.low){
+    warn.textContent = 'already low on space';
+  }
+
+  row.append(radio, letter, name, flags, free, warn);
+  row.addEventListener('click', () => {
+    document.querySelectorAll('.mv-target').forEach(r => r.classList.remove('chosen'));
+    row.classList.add('chosen');
+    radio.checked = true;
+    moveTargetId = t.drive_id;
+    document.getElementById('mv-go').disabled = false;
+  });
+  return row;
+}
+
+function closeMoveModal(){
+  document.getElementById('move-backdrop').classList.remove('show');
+  moveSelection = null;
+  moveTargetId = null;
+}
+
+document.getElementById('move-backdrop').addEventListener('click', function(e){
+  if(e.target === this) closeMoveModal();
+});
+
+function startMove(){
+  if(!moveSelection || !moveTargetId) return;
+  const btn = document.getElementById('mv-go');
+  btn.disabled = true;
+  btn.textContent = 'Starting…';
+
+  postJSON('/api/move', {node_ids: moveSelection.nodeIds,
+                         target_drive_id: moveTargetId,
+                         operation: moveOperation},
+    (data) => {
+      closeMoveModal();
+      clearSelection();
+      btn.textContent = 'Move';
+      showMovePanel();
+      renderMoveJob(data.job);
+      pollMove();
+    },
+    () => { btn.disabled = false;
+            btn.textContent = moveOperation === 'copy' ? 'Back up' : 'Move'; });
+}
+
+/* Per-row move and back up, so a single title does not need the checkbox
+   and the bar at the bottom. */
+document.addEventListener('click', function(e){
+  const btn = e.target.closest('.move-btn, .copy-btn');
+  if(!btn) return;
+  e.preventDefault();
+  e.stopPropagation();
+  openTransferModal(btn.classList.contains('copy-btn') ? 'copy' : 'move', [{
+    nodeId: Number(btn.dataset.nodeId),
+    name: btn.dataset.name,
+    size: btn.dataset.size,
+    driveId: btn.dataset.driveId
+  }]);
+});
+
+function showMovePanel(){
+  document.getElementById('move-panel').classList.add('show');
+  document.getElementById('move-reload').style.display = 'none';
+  document.getElementById('dock-move').style.display = 'none';
+}
+
+function minimiseMovePanel(){
+  document.getElementById('move-panel').classList.remove('show');
+  document.getElementById('dock-move').style.display = 'flex';
+}
+function restoreMovePanel(){
+  const pill = document.getElementById('dock-move');
+  if(pill.classList.contains('done') || pill.classList.contains('failed')){
+    pill.style.display = 'none';
+    reloadNow();
+    return;
+  }
+  showMovePanel();
+}
+
+function pollMove(){
+  clearTimeout(movePollTimer);
+  movePollTimer = setTimeout(async () => {
+    try{
+      const res = await fetch('/api/move/status');
+      const data = await res.json();
+      if(data.job){
+        renderMoveJob(data.job);
+        if(data.job.status === 'running'){ pollMove(); return; }
+        const done = data.job.operation === 'copy' ? 'backed up' : 'moved';
+        document.getElementById('move-title').textContent = data.job.failed
+          ? `Finished. ${data.job.moved} ${done}, ${data.job.failed} failed.`
+          : `Finished. ${data.job.moved} title(s) ${done}.`;
+        document.getElementById('move-current').style.display = 'none';
+        scheduleReload('move-reload', 'move-stay');
+
+        const pill = document.getElementById('dock-move');
+        if(pill.style.display !== 'none'){
+          pill.classList.toggle('failed', data.job.failed > 0);
+          pill.classList.toggle('done', data.job.failed === 0);
+          pill.querySelector('.dock-text').textContent =
+            data.job.failed ? 'Finished with errors' : 'Finished';
+          pill.querySelector('.dock-pct').textContent = 'reload';
+        }
+      }
+    } catch(e){
+      document.getElementById('move-title').textContent = 'Lost contact with the server.';
+    }
+  }, 900);
+}
+
+const MOVE_ICONS = {waiting: '·', moving: '▸', done: '✓', failed: '✕'};
+
+function renderMoveJob(job){
+  const verb = job.verb || 'Moving';
+  if(job.status === 'running'){
+    document.getElementById('move-title').textContent =
+      job.current ? `${verb} ${job.current} to ${job.target_label}` : verb + '…';
+  }
+  document.getElementById('move-elapsed').textContent = Math.round(job.elapsed || 0) + 's';
+
+  const bar = document.getElementById('move-bar');
+  const overall = job.total ? Math.round(100 * job.completed / job.total) : 0;
+  bar.style.width = overall + '%';
+  bar.classList.toggle('failed', job.failed > 0);
+
+  // Progress inside the current title. Without this a single large title
+  // looks frozen for as long as its episodes take to copy.
+  const cur = document.getElementById('move-current');
+  const p = job.current_progress;
+  if(p && job.status === 'running'){
+    cur.style.display = '';
+    document.getElementById('move-current-name').textContent = job.current || '';
+    document.getElementById('move-current-nums').textContent =
+      `${p.files_done}/${p.files_total} files · ${humanBytes(p.bytes_done)} of ${humanBytes(p.bytes_total)} · ${p.pct}%`;
+    document.getElementById('move-current-fill').style.width = p.pct + '%';
+  } else if(job.status === 'running'){
+    cur.style.display = '';
+    document.getElementById('move-current-name').textContent = job.current || '';
+    document.getElementById('move-current-nums').textContent = 'preparing…';
+    document.getElementById('move-current-fill').style.width = '0%';
+  } else {
+    cur.style.display = 'none';
+  }
+
+  const pill = document.getElementById('dock-move');
+  pill.querySelector('.dock-text').textContent =
+    job.current ? `${verb} ${job.current}` : verb;
+  pill.querySelector('.dock-pct').textContent =
+    p ? `${p.pct}%` : `${job.completed}/${job.total}`;
+
+  const box = document.getElementById('move-items');
+  box.innerHTML = '';
+  job.items.forEach(item => {
+    const row = document.createElement('div');
+    row.className = 'scan-drive';
+    const st = document.createElement('span');
+    st.className = 'st ' + item.status;
+    st.textContent = MOVE_ICONS[item.status] || '·';
+    const name = document.createElement('span');
+    name.textContent = item.name;
+    const detail = document.createElement('span');
+    detail.className = 'detail';
+    detail.textContent = item.detail || item.status;
+    row.append(st, name, detail);
+    box.appendChild(row);
+  });
+
+  const log = document.getElementById('move-log');
+  const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 20;
+  log.textContent = (job.log || []).join('\n');
+  if(atBottom) log.scrollTop = log.scrollHeight;
+}
+
+function humanBytes(n){
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0, v = n || 0;
+  while(v >= 1024 && i < units.length - 1){ v /= 1024; i++; }
+  return (i === 0 ? v : v.toFixed(1)) + ' ' + units[i];
+}
+
+/* Pick a move back up if one is already running. */
+window.addEventListener('DOMContentLoaded', async () => {
+  try{
+    const res = await fetch('/api/move/status');
+    const data = await res.json();
+    if(data.job && data.job.status === 'running'){
+      showMovePanel();
+      renderMoveJob(data.job);
+      pollMove();
+    }
+  } catch(e){ /* nothing running */ }
+});
 
 /* ---------- clicking away cancels ----------
    Anything the page opens in place (a rename box, a tag input, the search
@@ -1593,6 +2627,14 @@ document.addEventListener('keydown', function(e){
   if(e.key !== 'Escape') return;
   // The delete dialog has its own Escape handling and takes priority.
   if(document.getElementById('delete-backdrop').classList.contains('show')) return;
+  if(document.getElementById('move-backdrop').classList.contains('show')){
+    closeMoveModal();
+    return;
+  }
+  if(document.getElementById('settings-backdrop').classList.contains('show')){
+    closeSettings();
+    return;
+  }
   cancelRename();
   cancelTagInput();
   closeShieldPopovers();
@@ -1711,7 +2753,7 @@ document.addEventListener('click', function(e){
     btn.textContent = data.created.length
       ? `Created ${data.created.length} folder(s), reloading...`
       : 'Folders already existed, reloading...';
-    setTimeout(() => location.reload(), 800);
+    setTimeout(reloadNow, 800);
   }, () => { btn.disabled = false; btn.textContent = original; });
 });
 

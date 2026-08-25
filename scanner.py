@@ -459,6 +459,100 @@ def get_drive_type(root_path):
         return None
 
 
+# STORAGE_BUS_TYPE values we care about. The full list is longer.
+BUS_TYPE_USB = 7
+BUS_TYPE_NAMES = {1: "SCSI", 2: "ATAPI", 3: "ATA", 4: "1394", 5: "SSA", 6: "Fibre",
+                  7: "USB", 8: "RAID", 9: "iSCSI", 10: "SAS", 11: "SATA",
+                  12: "SD", 13: "MMC", 17: "NVMe"}
+
+_bus_cache = {}
+
+
+def get_bus_type(root_path):
+    """
+    Which bus a drive is attached to, e.g. 'USB', 'SATA', 'NVMe'.
+
+    GetDriveType is not enough here. Windows only calls a volume "removable"
+    when the media itself can be swapped, as with a card reader or a flash
+    drive, so an external USB hard disk reports as a fixed drive like any
+    internal one. Asking the device for its bus type is the only way to tell
+    that it is plugged in over USB and can be unplugged and carried away.
+
+    Returns None off Windows, or when the device will not answer.
+    """
+    if os.name != "nt" or not root_path:
+        return None
+
+    letter = os.path.splitdrive(root_path)[0].rstrip(":")
+    if not letter:
+        return None
+    if letter in _bus_cache:
+        return _bus_cache[letter]
+
+    result = _query_bus_type(letter)
+    _bus_cache[letter] = result
+    return result
+
+
+def _query_bus_type(letter):
+    import ctypes
+    from ctypes import wintypes
+
+    IOCTL_STORAGE_QUERY_PROPERTY = 0x2D1400
+    FILE_SHARE_READ_WRITE = 0x00000001 | 0x00000002
+    OPEN_EXISTING = 3
+    INVALID_HANDLE = ctypes.c_void_p(-1).value
+
+    class STORAGE_PROPERTY_QUERY(ctypes.Structure):
+        _fields_ = [("PropertyId", wintypes.DWORD),
+                    ("QueryType", wintypes.DWORD),
+                    ("AdditionalParameters", ctypes.c_byte * 1)]
+
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateFileW.restype = ctypes.c_void_p
+
+    # Access 0 means "just ask about the device", which needs no admin rights.
+    handle = kernel32.CreateFileW(f"\\\\.\\{letter}:", 0, FILE_SHARE_READ_WRITE,
+                                  None, OPEN_EXISTING, 0, None)
+    if not handle or handle == INVALID_HANDLE:
+        return None
+
+    try:
+        query = STORAGE_PROPERTY_QUERY()
+        query.PropertyId = 0      # StorageDeviceProperty
+        query.QueryType = 0       # PropertyStandardQuery
+
+        buffer = ctypes.create_string_buffer(1024)
+        returned = wintypes.DWORD()
+        ok = kernel32.DeviceIoControl(
+            ctypes.c_void_p(handle), IOCTL_STORAGE_QUERY_PROPERTY,
+            ctypes.byref(query), ctypes.sizeof(query),
+            buffer, ctypes.sizeof(buffer), ctypes.byref(returned), None,
+        )
+        if not ok or returned.value < 32:
+            return None
+        # BusType sits at offset 28 of STORAGE_DEVICE_DESCRIPTOR.
+        bus = int.from_bytes(buffer.raw[28:32], "little")
+        return BUS_TYPE_NAMES.get(bus, f"bus {bus}")
+    except Exception:
+        return None
+    finally:
+        kernel32.CloseHandle(ctypes.c_void_p(handle))
+
+
+def is_external(root_path):
+    """
+    Can this drive be unplugged and stored somewhere else?
+
+    True for anything on the USB bus, including external hard disks that
+    Windows otherwise reports as fixed, and for media Windows does call
+    removable.
+    """
+    if get_bus_type(root_path) == "USB":
+        return True
+    return get_drive_type(root_path) == DRIVE_REMOVABLE
+
+
 def has_library_folders(drive_root, root_prefix=DEFAULT_ROOT_PREFIX,
                         redundancy_prefix=DEFAULT_REDUNDANCY_PREFIX):
     """Does this drive have anything MediaVault would index?"""

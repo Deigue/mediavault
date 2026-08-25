@@ -10,10 +10,16 @@ tags, and duplicate/redundancy indicators.
 """
 
 import os
+import subprocess
+import sys
 
 from flask import Flask, render_template, request, jsonify
+import config
 import db
+import drivetypes
 import fileops
+import moveops
+import movejob
 import scanner
 import scanjob
 
@@ -23,7 +29,8 @@ app = Flask(__name__)
 # is one stat() per render, which is nothing next to the DB work.
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 
-LOW_SPACE_THRESHOLD = 0.15  # flag drives with less than 15% free
+# Per-type thresholds live in drivetypes.py, since the right fill level
+# depends on whether a drive is an SSD, a mechanical disk, or removable.
 
 
 def human(n_bytes):
@@ -128,12 +135,27 @@ def home():
         mount = connected.get(d["drive_id"])
         d["connected"] = mount is not None
         d["current_letter"] = scanner.drive_letter_for(mount)
+        # Only knowable while the drive is plugged in.
+        d["external"] = scanner.is_external(mount) if mount else False
+        d["bus_type"] = scanner.get_bus_type(mount) if mount else None
 
         total = d["total_bytes"] or 1
         used = d["used_bytes"] or 0
         free = d["free_bytes"] or 0
         d["pct_used"] = round(100 * used / total, 1)
-        d["low_space"] = (free / total) < LOW_SPACE_THRESHOLD
+
+        d["drive_type"] = drivetypes.detect(
+            label=d["label"], removable=False, stored=d.get("drive_type")
+        )
+        # A stored value means someone set it by hand, rather than it being
+        # read off the volume label.
+        d["type_is_manual"] = d.get("drive_type") in (
+            drivetypes.SSD, drivetypes.HDD, drivetypes.USB)
+        d["type_label"] = drivetypes.rule_for(d["drive_type"])["label"]
+        d["cold_storage"] = bool(d.get("cold_storage"))
+        space = drivetypes.evaluate(d["drive_type"], free, total, d["cold_storage"])
+        d["space"] = space
+        d["low_space"] = space["low"]
         d["total_h"] = human(total)
         d["used_h"] = human(used)
         d["free_h"] = human(free)
@@ -335,6 +357,206 @@ def api_node_delete():
 
     result["freed_h"] = human(result["bytes_freed"])
     return jsonify({"ok": True, "result": result})
+
+
+@app.route("/api/drive/type", methods=["POST"])
+def api_drive_type():
+    """
+    Set a drive's type by hand, and whether it is cold storage.
+
+    type of null goes back to reading it off the volume label.
+    """
+    data = request.get_json(force=True)
+    drive_id = data.get("drive_id")
+
+    if not drive_id or db.get_drive(drive_id) is None:
+        return jsonify({"ok": False, "error": "no such drive"}), 404
+
+    # Only touch what the request actually mentions. A missing key means
+    # "leave this alone", which is different from an explicit null meaning
+    # "go back to detecting it".
+    if "drive_type" in data:
+        drive_type = data["drive_type"]
+        if drive_type not in (None, drivetypes.SSD, drivetypes.HDD, drivetypes.USB):
+            return jsonify({"ok": False,
+                            "error": "drive_type must be ssd, hdd, usb or null"}), 400
+        db.set_drive_type(drive_id, drive_type)
+
+    if "cold_storage" in data:
+        db.set_drive_cold_storage(drive_id, bool(data["cold_storage"]))
+
+    return jsonify({"ok": True})
+
+
+def describe_target(d, mount, source_drive_id=None):
+    """
+    A drive as a move or backup target, with the facts that matter when
+    choosing one: how full it is, whether it is removable (so it can live
+    somewhere else), and whether it already holds real backups.
+    """
+    drive_type = drivetypes.detect(label=d["label"], stored=d.get("drive_type"))
+    space = drivetypes.evaluate(drive_type, d["free_bytes"], d["total_bytes"],
+                                bool(d.get("cold_storage")))
+    redundancy = db.redundancy_summary(d["drive_id"])
+    # A drive that can be unplugged and stored elsewhere is the only kind of
+    # copy that survives losing the machine, so it is worth pointing out.
+    external = scanner.is_external(mount)
+
+    return {
+        "drive_id": d["drive_id"],
+        "label": d["label"],
+        "letter": scanner.drive_letter_for(mount),
+        "free_bytes": d["free_bytes"],
+        "free_h": human(d["free_bytes"]),
+        "type_label": drivetypes.rule_for(drive_type)["label"],
+        "cold_storage": bool(d.get("cold_storage")),
+        "space": space,
+        "external": external,
+        "has_redundancy": redundancy["titles"] > 0,
+        "redundancy_titles": redundancy["titles"],
+        "redundancy_h": human(redundancy["size_bytes"]),
+        "same_drive": d["drive_id"] == source_drive_id,
+    }
+
+
+@app.route("/api/move/targets")
+def api_move_targets():
+    """
+    Drives a selection could be moved to: connected, with a library folder,
+    and not the drive the titles are already on.
+    """
+    exclude = request.args.get("exclude", "")
+    connected = scanner.get_connected_drives(max_age=0)
+
+    targets = []
+    for d in db.get_all_drives():
+        if d["drive_id"] == exclude:
+            continue
+        mount = connected.get(d["drive_id"])
+        if mount is None or moveops.find_library_root(mount) is None:
+            continue
+        targets.append(describe_target(d, mount, exclude))
+    return jsonify({"ok": True, "targets": targets})
+
+
+@app.route("/api/copy/targets")
+def api_copy_targets():
+    """
+    Drives a backup copy could go to: any connected drive. Unlike a move,
+    the redundancy folder is created if it is missing, so a drive does not
+    need one already.
+    """
+    connected = scanner.get_connected_drives(max_age=0)
+    source = request.args.get("source", "")
+
+    targets = []
+    for d in db.get_all_drives():
+        mount = connected.get(d["drive_id"])
+        if mount is None:
+            continue
+        targets.append(describe_target(d, mount, source))
+    return jsonify({"ok": True, "targets": targets})
+
+
+@app.route("/api/move", methods=["POST"])
+def api_move():
+    """Move the selected titles to another drive, or back them up to one."""
+    data = request.get_json(force=True)
+    target_drive_id = data.get("target_drive_id")
+    operation = data.get("operation", "move")
+    try:
+        node_ids = [int(i) for i in (data.get("node_ids") or [])]
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "node_ids must be integers"}), 400
+
+    job, problem = movejob.start(node_ids, target_drive_id, operation)
+    if job is None:
+        return jsonify({"ok": False, "error": problem}), 409
+    return jsonify({"ok": True, "job": job})
+
+
+@app.route("/api/move/status")
+def api_move_status():
+    return jsonify({"ok": True, "job": movejob.status()})
+
+
+@app.route("/api/settings")
+def api_settings():
+    """Current settings, the copy programs found on this machine, and which
+    one will actually be used."""
+    settings = config.load()
+    tool, path, note = config.resolve_copy_tool(settings)
+    return jsonify({
+        "ok": True,
+        "settings": settings,
+        "tools": config.detect_copy_tools(),
+        "effective_copy_tool": tool,
+        "effective_path": path,
+        "note": note,
+        "config_path": config.CONFIG_PATH,
+    })
+
+
+@app.route("/api/settings", methods=["POST"])
+def api_settings_save():
+    """Save settings from the dashboard."""
+    data = request.get_json(force=True)
+    settings = config.load()
+
+    if "copy_tool" in data:
+        settings["copy_tool"] = (data["copy_tool"] or "auto").lower()
+    if "copy_tool_path" in data:
+        path = (data["copy_tool_path"] or "").strip()
+        if path and not os.path.isfile(path):
+            return jsonify({"ok": False, "error": f"No file at:\n{path}"}), 400
+        settings["copy_tool_path"] = path
+        # Keep the TeraCopy specific setting in step, since it is what older
+        # config files use.
+        if settings["copy_tool"] == "teracopy" and path:
+            settings["teracopy_path"] = path
+    if "verify_after_copy" in data:
+        settings["verify_after_copy"] = bool(data["verify_after_copy"])
+
+    saved = config.save(settings)
+    tool, path, note = config.resolve_copy_tool(saved)
+    return jsonify({"ok": True, "settings": saved, "effective_copy_tool": tool,
+                    "effective_path": path, "note": note})
+
+
+@app.route("/api/settings/browse", methods=["POST"])
+def api_settings_browse():
+    """
+    Open a real Windows file picker and return what was chosen.
+
+    A browser cannot give a page the full path of a chosen file, so the
+    dialog is opened by the server instead. That works here only because the
+    server is the same machine you are sitting at. It runs in its own
+    process, since a UI toolkit does not belong in a request thread.
+    """
+    if os.name != "nt":
+        return jsonify({"ok": False, "error": "Only available on Windows."}), 400
+
+    script = (
+        "import tkinter as tk;"
+        "from tkinter import filedialog;"
+        "r = tk.Tk(); r.withdraw(); r.attributes('-topmost', True);"
+        "p = filedialog.askopenfilename("
+        "title='Pick the program that should copy files',"
+        "filetypes=[('Programs', '*.exe'), ('All files', '*.*')]);"
+        "print(p or '')"
+    )
+    try:
+        result = subprocess.run([sys.executable, "-c", script],
+                                capture_output=True, text=True, timeout=180)
+    except subprocess.TimeoutExpired:
+        return jsonify({"ok": False, "error": "The file picker was left open too long."}), 408
+    except OSError as e:
+        return jsonify({"ok": False, "error": f"Could not open a file picker: {e}"}), 500
+
+    chosen = (result.stdout or "").strip()
+    if not chosen:
+        return jsonify({"ok": True, "path": None, "cancelled": True})
+    return jsonify({"ok": True, "path": chosen, "cancelled": False})
 
 
 @app.route("/api/nodes/delete", methods=["POST"])

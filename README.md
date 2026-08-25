@@ -67,6 +67,149 @@ or delete files.
 - **Find what to delete** from each drive's largest folders panel. Click any
   entry to jump to it in the tree, where the open, tag and delete controls
   are.
+- **Move titles to another drive.** Use the arrow icon on a title, or select
+  several and use the bar at the bottom. Each lands in the matching category
+  on the target (Anime to Anime, Movies to Movies). Targets that cannot fit
+  the selection are marked. See "Moving things around" below.
+- **Back up titles to another drive.** The shield icon copies a title into
+  the target's redundancy folder and leaves the original alone.
+- **Set how each drive is treated.** Each drive is labelled SSD, HDD or USB,
+  read from its volume label, and you can override it. The type decides how
+  much free space it should keep: 15 percent for an SSD, which needs the
+  headroom to write efficiently and wear evenly, and 10 percent for a
+  mechanical disk, which is fine to fill but gets slow and fragmented near
+  the end. Tick **Cold storage** on a drive you have deliberately filled and
+  only read from, and it stops warning you.
+
+## Moving things around
+
+Selecting titles and choosing **Move to drive** copies them to the target,
+checks the copy arrived, and only then removes the originals. A move between
+drives is never a rename, so:
+
+- If the copy fails or comes up short, **nothing is deleted**. The original
+  stays exactly where it is and the partial copy is left on the target for
+  you to look at or remove.
+- If the copy succeeds but the original cannot be removed, for example
+  because something has the folder open, you are told, and the title is left
+  in both places rather than silently half moved.
+- Tags follow the title to its new home.
+
+Verification compares file count and total size. That catches the failures
+that actually happen, a copy that stopped partway or ran out of room, without
+the cost of hashing hundreds of gigabytes.
+
+### Backing up to another drive
+
+**Back up to drive** copies instead of moving. The copy lands in the target
+drive's redundancy folder, under the same category, and the original stays
+where it is:
+
+```
+I:\99_Redundancy\Anime\Attack on Golem
+```
+
+Both the redundancy folder and the category are created if the target does
+not have them. Once the copy is verified the title shows a green shield,
+because a complete copy now exists elsewhere.
+
+You can back up to the same drive the title is already on. That protects
+against deleting it by accident, but not against the drive failing, and the
+target list says so.
+
+The drive list is tagged to help you choose:
+
+| Tag | Meaning |
+| --- | --- |
+| `external` | On the USB bus, so it can be unplugged and kept away from the machine |
+| `backups (n)` | Already holds n backed up titles, so it is where backups live |
+| `SSD` / `HDD` / `USB` | The drive type, which sets its free space threshold |
+
+`backups` counts titles actually sitting in the redundancy folder, not
+whether the folder exists. A drive with an empty `99_Redundancy` is not
+holding anything, so it does not claim to.
+
+### Choosing the copy tool
+
+Settings live in `config.json`, created next to the code on first run:
+
+```json
+{
+  "copy_tool": "teracopy",
+  "teracopy_path": "C:\\Program Files\\TeraCopy\\TeraCopy.exe",
+  "verify_after_copy": true
+}
+```
+
+`copy_tool` accepts:
+
+| Value | What it uses |
+| --- | --- |
+| `auto` | robocopy if present, otherwise the built-in copier |
+| `robocopy` | ships with Windows, resumable, handles long paths well |
+| `teracopy` | TeraCopy's own window shows the transfer |
+| `python` | the built-in copier, works anywhere, no frills |
+
+Restart the dashboard after editing `config.json`.
+
+The easiest way to set this is the **Settings** button on the dashboard. It
+lists the copy programs found on your machine, so TeraCopy or FastCopy in
+their usual place can just be picked. Anything else is chosen with
+**Browse**, which opens a normal Windows file picker.
+
+#### Using TeraCopy
+
+Choose TeraCopy in Settings, or set `copy_tool` to `teracopy` and point
+`teracopy_path` at the executable, usually
+`C:\Program Files\TeraCopy\TeraCopy.exe`. TeraCopy opens its own
+window with its own progress, and the dashboard shows progress at the same
+time.
+
+TeraCopy often hands work to an instance that is already running and exits
+straight away, so the program exiting is not treated as the copy being
+finished. MediaVault watches the target until it matches the source and
+stops growing, then verifies as usual.
+
+#### Using another copier
+
+Any copier that takes a source and a destination on the command line can be
+added. Copy the shape of `_copy_with_teracopy` in `moveops.py`, for example
+FastCopy:
+
+```python
+def _copy_with_fastcopy(source, target, is_dir, tool_path, log, expected_bytes):
+    args = [tool_path, "/cmd=diff", "/auto_close", f"/to={os.path.dirname(target)}", source]
+    subprocess.Popen(args).wait()
+    wait_until_settled(target, expected_bytes, log)
+```
+
+then add it to `copy_tree` in `moveops.py` and to `resolve_copy_tool` in
+`config.py`. The rules to follow:
+
+- **Block until the copy is really finished.** If the program returns early,
+  call `wait_until_settled` the way the TeraCopy path does.
+- **Never delete anything yourself.** MediaVault verifies the copy first and
+  handles removing the source.
+- Progress needs nothing from the tool. It is measured by watching the
+  target folder fill.
+
+If a chosen tool is missing, MediaVault falls back to the built-in copier and
+says so in the log rather than failing. Setting `verify_after_copy` to false
+makes transfers faster and considerably less safe.
+
+### Watching progress
+
+Move and copy jobs show a panel with overall progress, progress within the
+title currently being copied, and a log. The panel stays in view as you
+scroll. **Minimise** shrinks it to a pill in the bottom corner that keeps
+showing progress, and clicking the pill brings the panel back. A running job
+is never hidden completely.
+
+When a job finishes the page refreshes on its own after a few seconds, since
+sizes, free space and backup shields are all out of date until it does.
+**Stay on this page** stops the countdown if you want to read the log first.
+Whichever drives were expanded, and where you were scrolled to, are restored
+after the refresh.
 
 ## Folder convention
 

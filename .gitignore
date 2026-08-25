@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 .DS_Store
 /BACKLOG.md
+
+# Local settings, including paths to your own copy tool.
+config.json
