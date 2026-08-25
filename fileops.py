@@ -9,7 +9,6 @@ inside that drive. Nothing acts on a path handed in by the caller.
 
 import os
 import shutil
-import subprocess
 
 import db
 import scanner
@@ -68,20 +67,6 @@ def open_in_shell(node_id):
         os.startfile(abs_path)      # noqa: S606 - this is the whole point
     except OSError as e:
         raise FileOpError(f"Windows could not open it: {e}")
-    return abs_path
-
-
-def reveal_in_shell(node_id):
-    """Open the containing folder with the item selected."""
-    abs_path, _node, _root = resolve_node_path(node_id)
-
-    if os.name != "nt":
-        raise FileOpError("Opening files is only supported on Windows.")
-
-    try:
-        subprocess.Popen(["explorer.exe", "/select,", os.path.normpath(abs_path)])
-    except OSError as e:
-        raise FileOpError(f"Could not open the folder: {e}")
     return abs_path
 
 

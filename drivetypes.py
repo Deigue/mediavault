@@ -90,11 +90,6 @@ def rule_for(drive_type):
     return SPACE_RULES.get(drive_type, SPACE_RULES[UNKNOWN])
 
 
-def warn_threshold(drive_type):
-    """Free space fraction below which the drive should be flagged."""
-    return rule_for(drive_type)["warn_free_pct"] / 100.0
-
-
 def evaluate(drive_type, free_bytes, total_bytes, cold_storage=False):
     """
     Should this drive be flagged, and what should it say?

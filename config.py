@@ -19,7 +19,9 @@ DEFAULTS = {
     # auto | robocopy | teracopy | fastcopy | custom | python
     #   auto      use robocopy if it is on the system, otherwise python
     #   robocopy  ships with Windows, resumable, good with long paths
-    #   teracopy  needs teracopy_path set below
+    #   teracopy  needs copy_tool_path set below
+    #   fastcopy  needs copy_tool_path set below
+    #   custom    any copier taking a source and a destination
     #   python    shutil.copytree, works everywhere, no frills
     "copy_tool": "auto",
     "teracopy_path": r"C:\Program Files\TeraCopy\TeraCopy.exe",
@@ -28,6 +30,10 @@ DEFAULTS = {
     # After copying, check the destination matches before deleting the source.
     # Turning this off makes a move faster and considerably less safe.
     "verify_after_copy": True,
+    # Where the Backup button sends the database, as an rclone path such as
+    # "gdrive:Backups/PC/mediavault". Empty means the feature is off. rclone
+    # has to be installed and configured separately; see backup.py.
+    "backup_target": "",
 }
 
 

@@ -311,8 +311,8 @@ def scan_and_store(drive_path, label=None, root_prefix=DEFAULT_ROOT_PREFIX,
                    log=None):
     """
     Scan one drive and write it to the database. This is the single entry
-    point used by the CLI below, by watch_drives.py, and by the dashboard's
-    scan endpoint - so all three behave identically.
+    point used by the CLI below and by the dashboard's scan endpoint, so both
+    behave identically.
 
     log: optional callable taking one string, for progress output. Defaults
     to print() for CLI use; the web endpoint passes a collector instead.
@@ -444,12 +444,17 @@ def find_mounted_drive(drive_id, max_age=CONNECTED_CACHE_SECONDS):
 # GetDriveTypeW return values we are willing to scan.
 DRIVE_REMOVABLE = 2
 DRIVE_FIXED = 3
-SCANNABLE_DRIVE_TYPES = {DRIVE_REMOVABLE, DRIVE_FIXED}
+DRIVE_REMOTE = 4
+# Network drives are included so a drive physically in another PC can be
+# mapped to a letter here and indexed like any other. Identity still comes
+# from the marker file at the drive root, so it is recognized as the same
+# drive whichever machine reaches it and whatever letter it is mapped to.
+SCANNABLE_DRIVE_TYPES = {DRIVE_REMOVABLE, DRIVE_FIXED, DRIVE_REMOTE}
 
 
 def get_drive_type(root_path):
-    """Windows drive type number, or None off Windows. 4 is a network share,
-    5 a CD-ROM, both of which we skip."""
+    """Windows drive type number, or None off Windows. 5 is a CD-ROM, which
+    we skip."""
     if os.name != "nt":
         return None
     try:
@@ -574,8 +579,11 @@ def find_scannable_drives():
     A drive qualifies if MediaVault already knows it, or if it has a library
     or redundancy folder on it. Everything else is left alone, so scanning
     does not create empty entries for the system drive or for a USB stick
-    that happens to be plugged in. Network drives and optical drives are
-    skipped outright.
+    that happens to be plugged in. Optical drives are skipped outright.
+
+    A mapped network drive counts, so drives living in another PC on the
+    network can be indexed from here once they are given a drive letter. A
+    bare UNC path cannot - Windows only reports lettered volumes.
     """
     known = {d["drive_id"]: d for d in db.get_all_drives()}
     connected = get_connected_drives(max_age=0)

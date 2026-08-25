@@ -14,6 +14,7 @@ import subprocess
 import sys
 
 from flask import Flask, render_template, request, jsonify
+import backup
 import config
 import db
 import drivetypes
@@ -494,6 +495,9 @@ def api_settings():
         "effective_path": path,
         "note": note,
         "config_path": config.CONFIG_PATH,
+        # Whether the Backup button can do anything, so the settings panel
+        # can say so plainly instead of the button failing when pressed.
+        "rclone_path": backup.rclone_path(),
     })
 
 
@@ -516,11 +520,32 @@ def api_settings_save():
             settings["teracopy_path"] = path
     if "verify_after_copy" in data:
         settings["verify_after_copy"] = bool(data["verify_after_copy"])
+    if "backup_target" in data:
+        # Not validated against the remote: that would mean a network round
+        # trip on every save, and rclone reports a bad target clearly enough
+        # when the backup actually runs.
+        settings["backup_target"] = (data["backup_target"] or "").strip()
 
     saved = config.save(settings)
     tool, path, note = config.resolve_copy_tool(saved)
     return jsonify({"ok": True, "settings": saved, "effective_copy_tool": tool,
                     "effective_path": path, "note": note})
+
+
+@app.route("/api/backup", methods=["POST"])
+def api_backup():
+    """
+    Snapshot the database and upload it to the configured target.
+
+    Runs in the request rather than as a background job: the file is a couple
+    of megabytes, so this is a few seconds at worst, and a job would need a
+    dock entry and progress polling to say nothing more than "done".
+    """
+    try:
+        summary = backup.run()
+    except backup.BackupError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    return jsonify({"ok": True, **summary})
 
 
 @app.route("/api/settings/browse", methods=["POST"])

@@ -700,15 +700,6 @@ def get_tags_for_drive(drive_id):
     return result
 
 
-def has_any_tags(drive_id, rel_path):
-    conn = get_conn()
-    row = conn.execute(
-        "SELECT 1 FROM tags WHERE drive_id = ? AND rel_path = ? LIMIT 1", (drive_id, rel_path)
-    ).fetchone()
-    conn.close()
-    return row is not None
-
-
 def add_tag(drive_id, rel_path, tag):
     tag = tag.strip()
     if not tag:
@@ -823,14 +814,3 @@ def delete_drive(drive_id):
     conn.execute("DELETE FROM drives WHERE drive_id = ?", (drive_id,))
     conn.commit()
     conn.close()
-
-
-def delete_orphan_tags():
-    """Remove tag rows whose drive is no longer in the database. Cleans up
-    after drives forgotten before delete_drive started removing tags."""
-    conn = get_conn()
-    cur = conn.execute("DELETE FROM tags WHERE drive_id NOT IN (SELECT drive_id FROM drives)")
-    conn.commit()
-    removed = cur.rowcount
-    conn.close()
-    return removed

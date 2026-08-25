@@ -301,27 +301,6 @@ def _copy_with_external(tool, source, target, is_dir, tool_path, log, expected_b
     log(f"    {os.path.basename(tool_path)} finished")
 
 
-def _copy_with_teracopy(source, target, is_dir, tool_path, log, expected_bytes):
-    """
-    TeraCopy shows its own progress window, which is the point of using it.
-
-    It also tends to hand off to an already running instance and exit
-    straight away, so waiting on the process is not enough to know the copy
-    finished. After the process returns we watch the target until it matches
-    the source and stops growing.
-    """
-    args = [tool_path, "Copy", source, os.path.dirname(target), "/Close"]
-    log("    handing off to TeraCopy, its window shows the detail")
-    try:
-        proc = subprocess.Popen(args)
-        proc.wait()
-    except OSError as e:
-        raise MoveError(f"Could not start TeraCopy: {e}")
-
-    wait_until_settled(target, expected_bytes, log)
-    log("    TeraCopy finished")
-
-
 def wait_until_settled(target, expected_bytes, log, idle_timeout=120, poll=1.0):
     """
     Wait for a copy to stop changing.

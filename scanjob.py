@@ -13,7 +13,6 @@ import threading
 import time
 import traceback
 
-import db
 import scanner
 
 MAX_LOG_LINES = 400

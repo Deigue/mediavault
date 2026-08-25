@@ -639,11 +639,6 @@
   }
   .toast.show{ transform:translate(-50%, 0); }
 
-  .dup-badge{
-    display:inline-flex; align-items:center; justify-content:center; width:18px; height:18px;
-    border-radius:5px; background:rgba(167,139,250,0.15); color:var(--purple);
-    font-size:12px; cursor:help; flex-shrink:0;
-  }
   .root-type-badge{
     font-family:'IBM Plex Mono',monospace; font-size:10px; letter-spacing:0.06em;
     padding:2px 7px; border-radius:4px; background:rgba(79,209,197,0.12); color:var(--accent);
@@ -774,7 +769,8 @@
     <b>Low space:</b>
     {% for d in low_space_drives %}{{ d.label }} ({{ d.free_h }} free){% if not loop.last %}, {% endif %}{% endfor %}
     Expand a drive below and check its "largest folders" panel for where to start.
-    Titles marked <span class="dup-badge" style="width:auto;padding:1px 5px;">⧉</span> have a copy elsewhere already.
+    Titles marked <span class="shield full">🛡</span> already have a complete copy
+    elsewhere, so they are the safest to remove.
   </div>
 </div>
 {% endif %}
@@ -785,6 +781,7 @@
     <button id="scan-btn" class="scan-btn" onclick="startScan()">Scan connected drives</button>
     <button id="setup-btn" class="scan-btn ghost" onclick="openSetup()">Set up a drive</button>
     <button id="settings-btn" class="scan-btn ghost" onclick="openSettings()" title="Choose the program that copies files">Settings</button>
+    <button id="backup-btn" class="scan-btn ghost" onclick="runBackup()" title="Copy the database to the backup target set in Settings">Back up</button>
     <span class="hint mono">{{ stats.connected_count }}/{{ drives|length }} connected</span>
   </div>
 
@@ -1211,6 +1208,13 @@
     </div>
 
     <div class="set-effective" id="set-effective"></div>
+
+    <div class="set-section">
+      <div class="set-label">Backup target</div>
+      <input id="set-backup-target" class="bulk-input set-path"
+             placeholder="gdrive:Backups/PC/mediavault" autocomplete="off">
+      <div class="set-note" id="set-backup-note"></div>
+    </div>
 
     <div class="modal-actions">
       <button class="bulk-btn ghost" onclick="closeSettings()">Cancel</button>
@@ -1884,6 +1888,23 @@ function flashToast(message){
   setTimeout(() => { el.classList.remove('show'); setTimeout(() => el.remove(), 300); }, 3600);
 }
 
+/* ---------- backup ----------
+   Uploading a couple of megabytes takes a moment, so the button says what it
+   is doing and stays disabled until it is done. Anything that goes wrong is
+   worth an alert rather than a toast: it means the target or rclone itself
+   needs attention. */
+function runBackup(){
+  const btn = document.getElementById('backup-btn');
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Backing up…';
+  const done = () => { btn.disabled = false; btn.textContent = original; };
+  postJSON('/api/backup', {}, (data) => {
+    done();
+    flashToast(`Database backed up to ${data.target}`);
+  }, done);
+}
+
 /* ---------- setting up a drive ----------
    Drives with no library folder are never scanned, so they are not in the
    database at all. They are found by looking at what is mounted right now. */
@@ -2070,6 +2091,15 @@ function renderSettings(){
   document.getElementById('set-verify').checked = s.settings.verify_after_copy !== false;
   document.getElementById('set-config-path').textContent = 'Saved in ' + s.config_path;
 
+  document.getElementById('set-backup-target').value = s.settings.backup_target || '';
+  // Say up front whether the Backup button can work, rather than letting it
+  // fail when pressed.
+  document.getElementById('set-backup-note').textContent = s.rclone_path
+    ? 'Any rclone destination, e.g. gdrive:Backups/PC/mediavault. Leave empty '
+      + 'to turn the Backup button off. Using rclone at ' + s.rclone_path
+    : 'Backups need rclone, which is not installed here. Get it from rclone.org, '
+      + 'then run "rclone config" once to connect your Google Drive.';
+
   updatePathHint(chosen);
   updateEffective();
 }
@@ -2200,7 +2230,8 @@ function saveSettings(){
     // A path only means anything for the programs that need one.
     copy_tool_path: needsPath(chosen)
       ? document.getElementById('set-path').value.trim() : '',
-    verify_after_copy: document.getElementById('set-verify').checked
+    verify_after_copy: document.getElementById('set-verify').checked,
+    backup_target: document.getElementById('set-backup-target').value.trim()
   }, (data) => {
     btn.disabled = false;
     closeSettings();
