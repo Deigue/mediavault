@@ -56,9 +56,65 @@ def get_volume_info(drive_root):
         return None, None
 
 
-def get_windows_volume_label(drive_root):
-    """Just the volume label - see get_volume_info()."""
-    return get_volume_info(drive_root)[0]
+def get_share_name(drive_root):
+    """
+    The share behind a mapped network drive, e.g. "HDD-4TB-02" for a Z:
+    mapped to \\\\FILESERVER\\HDD-4TB-02.
+
+    Most SMB shares report no volume label at all - the label belongs to the
+    remote volume and the server does not hand it over - so a network drive
+    otherwise shows up nameless. Explorer falls back to the share name for
+    exactly this reason, and the naming convention here is written on the
+    share anyway, so the type is recoverable from it too.
+
+    Also handles a UNC path passed as the root directly. Returns None off
+    Windows, or when the root is neither mapped nor UNC.
+    """
+    if os.name != "nt" or not drive_root:
+        return None
+
+    unc = _unc_for(drive_root)
+    if not unc:
+        return None
+    # "\\\\server\\share" -> "share"; a bare "\\\\server" has nothing to give.
+    parts = unc.strip("\\").split("\\")
+    return parts[-1] if len(parts) >= 2 else None
+
+
+def _unc_for(drive_root):
+    """The UNC path a root refers to, or None if it is a local volume."""
+    prefix = os.path.splitdrive(drive_root)[0]
+    if prefix.startswith("\\\\"):
+        return prefix
+    if not prefix.endswith(":"):
+        return None
+    try:
+        buf = ctypes.create_unicode_buffer(1024)
+        length = ctypes.c_ulong(ctypes.sizeof(buf) // ctypes.sizeof(ctypes.c_wchar))
+        rc = ctypes.windll.mpr.WNetGetConnectionW(
+            ctypes.c_wchar_p(prefix), buf, ctypes.byref(length),
+        )
+        # Anything else means the letter is local, disconnected, or unknown.
+        return buf.value or None if rc == 0 else None
+    except Exception:
+        return None
+
+
+def get_drive_name(drive_root):
+    """
+    What to call this drive: the share name if it is mapped over the network,
+    otherwise its volume label. None if neither is available.
+
+    The share wins for a network drive because it is the name this machine
+    gives the mapping, and so the one the naming convention is written on.
+    The volume label underneath belongs to the other machine and is whatever
+    that machine happens to call the disk - a share mapped as HDD-4TB-02
+    reporting a label of "Storage" - so preferring it quietly throws the
+    convention away. Windows only hands the remote label over for some
+    shares, which is why this went unnoticed: the ones that report nothing
+    fell through to the share name and looked correct.
+    """
+    return get_share_name(drive_root) or get_volume_info(drive_root)[0]
 
 
 def _fallback_fingerprint(drive_root, total_bytes):
@@ -69,13 +125,19 @@ def _fallback_fingerprint(drive_root, total_bytes):
     Built from the volume serial number first - that is unique per formatted
     volume and survives relettering. Label and size are folded in as
     additional entropy, and as the only signal available if the serial can't
-    be read (non-Windows, or an odd filesystem).
+    be read (non-Windows, an odd filesystem, or a network share).
+
+    For a network drive the UNC path stands in for both: Windows reports
+    neither serial nor label for most shares, and the drive letter it is
+    mapped to is exactly the thing this id is supposed to be independent of.
     """
     label, serial = get_volume_info(drive_root)
     if not label:
         # normpath("C:\\") basenames to "" - fall back to the raw root string
         # rather than silently contributing nothing to the fingerprint.
-        label = os.path.basename(os.path.normpath(drive_root)) or str(drive_root)
+        label = (_unc_for(drive_root)
+                 or os.path.basename(os.path.normpath(drive_root))
+                 or str(drive_root))
     raw = f"{serial or 'noserial'}-{label}-{total_bytes}"
     return "ro-" + hashlib.sha1(raw.encode("utf-8", "ignore")).hexdigest()[:16]
 

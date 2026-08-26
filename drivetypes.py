@@ -43,8 +43,8 @@ SPACE_RULES = {
     },
 }
 
-# Matches a type at the start of a volume label, e.g. "SSD-1TB-02",
-# "HDD-2TB-01", "USB-8GB-DEL". The separator is optional so "SSD1" works too.
+# Matches a type at the start of a volume label, e.g. "SSD-500GB-01",
+# "HDD-4TB-02", "USB-32GB-03". The separator is optional so "SSD1" works too.
 LABEL_PATTERN = re.compile(r"^\s*(ssd|hdd|usb|nvme|flash|thumb)\b[-_ ]?", re.IGNORECASE)
 
 LABEL_ALIASES = {

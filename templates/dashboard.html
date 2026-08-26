@@ -195,6 +195,28 @@
   .scan-btn.ghost{ background:var(--panel); border-color:var(--line); color:var(--text-dim); }
   .scan-btn.ghost:hover{ border-color:var(--accent-dim); color:var(--accent); background:var(--panel); }
 
+  /* ---- icon-only toolbar buttons ----
+     Square, same height as the text buttons beside them, and each tinted by
+     what it does: teal for the tree controls, green for a backup, matching
+     the shield the backup produces elsewhere on the page. */
+  .icon-btn{
+    background:var(--panel); border:1px solid var(--line); color:var(--text-dim);
+    border-radius:8px; width:40px; height:40px; padding:0; cursor:pointer;
+    display:inline-flex; align-items:center; justify-content:center;
+    flex-shrink:0; transition:color .12s, border-color .12s, background .12s;
+  }
+  .icon-btn .ic{ width:17px; height:17px; display:block; }
+  .icon-btn:hover{ border-color:var(--accent-dim); color:var(--accent); background:rgba(79,209,197,0.14); }
+  .icon-btn.backup-btn:hover{ border-color:#4ADE80; color:#4ADE80; background:rgba(74,222,128,0.14); }
+  .icon-btn:disabled{ opacity:0.55; cursor:default; }
+  .icon-btn:disabled:hover{ border-color:var(--line); color:var(--text-dim); background:var(--panel); }
+  /* While a backup is running the icon breathes rather than the label
+     changing, since there is no label left to change. */
+  .icon-btn.busy{ opacity:1; color:#4ADE80; border-color:#4ADE80; animation:icon-pulse 1.1s ease-in-out infinite; }
+  @keyframes icon-pulse{ 0%,100%{ opacity:1; } 50%{ opacity:0.35; } }
+  /* The two tree controls read as one pair, so they sit tight together. */
+  .icon-group{ display:inline-flex; gap:4px; flex-shrink:0; }
+
   .setup-note{ font-size:12px; color:var(--text-faint); line-height:1.6; margin-bottom:10px; }
   .setup-note code{
     background:var(--bg); padding:1px 5px; border-radius:4px;
@@ -222,6 +244,34 @@
     background:rgba(242,166,90,0.12); color:var(--warn);
   }
   .setup-empty{ font-size:12.5px; color:var(--text-faint); padding:6px 0; }
+  /* A mounted drive that did not answer in time. Called out rather than
+     dropped, so a drive visible in Explorer but missing from this list has
+     a stated reason instead of looking like a bug. */
+  .setup-stalled{
+    font-size:12px; color:var(--warn); padding:7px 9px; margin-bottom:4px;
+    border-radius:6px; background:rgba(242,166,90,0.08);
+    border:1px solid rgba(242,166,90,0.2);
+  }
+  .setup-stalled b{ font-family:'IBM Plex Mono',monospace; font-weight:500; }
+  /* Network drives, listed but not yet checked. Shown greyed with their own
+     button, so local drives appear at once instead of waiting on a share
+     whose host may be asleep. */
+  .setup-deferred{
+    margin-top:8px; padding-top:8px; border-top:1px solid var(--line);
+  }
+  .setup-deferred .setup-row{ opacity:0.55; cursor:default; }
+  .setup-deferred .setup-row:hover{ background:none; }
+  .setup-defer-head{
+    display:flex; align-items:center; justify-content:space-between; gap:10px;
+    font-size:11px; color:var(--text-faint); padding:2px 9px 6px;
+  }
+  .setup-defer-btn{
+    font-size:11px; padding:4px 10px; border-radius:6px; cursor:pointer;
+    background:transparent; color:var(--accent); white-space:nowrap;
+    border:1px solid var(--line);
+  }
+  .setup-defer-btn:hover:not(:disabled){ border-color:var(--accent); }
+  .setup-defer-btn:disabled{ opacity:0.5; cursor:default; }
 
   /* ---- drive type and space rules ---- */
   .type-badge{
@@ -778,10 +828,25 @@
 <div class="toolbar">
   <div class="toolbar-row">
     <input id="search" type="text" placeholder="Search for a show or movie across every drive…" oninput="onSearchInput()" autocomplete="off">
+    {# Tree controls. The macros further down are defined after this point in
+       the template, so these three icons are written out inline. #}
+    <span class="icon-group">
+      <button id="expand-all-btn" class="icon-btn" onclick="expandAll()"
+              title="Expand every drive" aria-label="Expand all">
+        <svg viewBox="0 0 16 16" class="ic" aria-hidden="true"><path d="M4.2 6.4L8 2.6l3.8 3.8M4.2 9.6L8 13.4l3.8-3.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button id="collapse-all-btn" class="icon-btn" onclick="collapseAll()"
+              title="Collapse everything back to the drive list" aria-label="Collapse all">
+        <svg viewBox="0 0 16 16" class="ic" aria-hidden="true"><path d="M4.2 2.6L8 6.4l3.8-3.8M4.2 13.4L8 9.6l3.8 3.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </span>
     <button id="scan-btn" class="scan-btn" onclick="startScan()">Scan connected drives</button>
     <button id="setup-btn" class="scan-btn ghost" onclick="openSetup()">Set up a drive</button>
     <button id="settings-btn" class="scan-btn ghost" onclick="openSettings()" title="Choose the program that copies files">Settings</button>
-    <button id="backup-btn" class="scan-btn ghost" onclick="runBackup()" title="Copy the database to the backup target set in Settings">Back up</button>
+    <button id="backup-btn" class="icon-btn backup-btn" onclick="runBackup()"
+            title="Back up: copy the database to the backup target set in Settings" aria-label="Back up">
+      <svg viewBox="0 0 16 16" class="ic" aria-hidden="true"><path d="M4.5 12.4a3 3 0 0 1-.3-6 4 4 0 0 1 7.7.7 2.7 2.7 0 0 1-.4 5.3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 14.2V7.3M5.6 9.5L8 7.1l2.4 2.4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
     <span class="hint mono">{{ stats.connected_count }}/{{ drives|length }} connected</span>
   </div>
 
@@ -1250,6 +1315,28 @@
 function toggleDrive(el){
   if(el.classList.contains('renaming')) return;  // don't collapse mid-edit
   el.classList.toggle('open');
+}
+
+/* ---------- expand / collapse everything ----------
+   Expanding opens every drive panel and every folder whose contents are
+   already in the page. Folders still marked data-lazy="1" are left shut on
+   purpose: opening them would fire one /api/children request per folder,
+   which on a full library is thousands of requests at once. Collapsing has
+   no such worry and closes the lot, leaving just the drive headers. */
+function expandAll(){
+  document.querySelectorAll('.drive').forEach(d => {
+    if(!d.classList.contains('renaming')) d.classList.add('open');
+  });
+  document.querySelectorAll('details.node').forEach(n => {
+    if(n.dataset.lazy !== '1') n.open = true;
+  });
+}
+
+function collapseAll(){
+  document.querySelectorAll('.drive').forEach(d => {
+    if(!d.classList.contains('renaming')) d.classList.remove('open');
+  });
+  document.querySelectorAll('details.node[open]').forEach(n => { n.open = false; });
 }
 
 /* ---------- lazy tree loading ----------
@@ -1889,16 +1976,21 @@ function flashToast(message){
 }
 
 /* ---------- backup ----------
-   Uploading a couple of megabytes takes a moment, so the button says what it
-   is doing and stays disabled until it is done. Anything that goes wrong is
-   worth an alert rather than a toast: it means the target or rclone itself
-   needs attention. */
+   Uploading a couple of megabytes takes a moment. The button is an icon with
+   no label to change, so it pulses and takes a new tooltip instead, and stays
+   disabled until it is done. Anything that goes wrong is worth an alert
+   rather than a toast: it means the target or rclone itself needs attention. */
 function runBackup(){
   const btn = document.getElementById('backup-btn');
-  const original = btn.textContent;
+  const original = btn.title;
   btn.disabled = true;
-  btn.textContent = 'Backing up…';
-  const done = () => { btn.disabled = false; btn.textContent = original; };
+  btn.classList.add('busy');
+  btn.title = 'Backing up…';
+  const done = () => {
+    btn.disabled = false;
+    btn.classList.remove('busy');
+    btn.title = original;
+  };
   postJSON('/api/backup', {}, (data) => {
     done();
     flashToast(`Database backed up to ${data.target}`);
@@ -1908,28 +2000,54 @@ function runBackup(){
 /* ---------- setting up a drive ----------
    Drives with no library folder are never scanned, so they are not in the
    database at all. They are found by looking at what is mounted right now. */
-async function openSetup(){
+async function openSetup(withNetwork){
   const panel = document.getElementById('setup-panel');
   const list = document.getElementById('setup-list');
-  list.innerHTML = '<div class="setup-empty">Checking drives…</div>';
+  list.innerHTML = withNetwork
+    ? '<div class="setup-empty">Checking network drives…</div>'
+    : '<div class="setup-empty">Checking drives…</div>';
   panel.classList.add('show');
 
-  let candidates = [];
+  let candidates = [], stalled = [], deferred = [];
   try{
-    const res = await fetch('/api/drives/setup-candidates');
-    candidates = (await res.json()).candidates || [];
+    const url = '/api/drives/setup-candidates' + (withNetwork ? '?network=1' : '');
+    const res = await fetch(url);
+    const data = await res.json();
+    candidates = data.candidates || [];
+    stalled = data.unresponsive || [];
+    deferred = data.deferred || [];
   } catch(e){
     list.innerHTML = '<div class="setup-empty">Could not reach the server.</div>';
     return;
   }
 
-  if(candidates.length === 0){
-    list.innerHTML = '<div class="setup-empty">'
-      + 'Every connected drive already has a library folder.</div>';
-    return;
+  list.innerHTML = '';
+
+  /* Drives that are mounted but stopped answering - a share whose PC is off,
+     or a phone that left the wifi. They are skipped so the list still loads,
+     which means saying so here is the only thing that stops them looking
+     simply absent. */
+  if(stalled.length){
+    const note = document.createElement('div');
+    note.className = 'setup-stalled';
+    const letters = stalled.map(s => `<b>${s.letter}</b>`).join(', ');
+    note.innerHTML = stalled.length === 1
+      ? `${letters} is mounted but not responding, so it was skipped. `
+        + 'Reconnect it and reopen this panel.'
+      : `${letters} are mounted but not responding, so they were skipped. `
+        + 'Reconnect them and reopen this panel.';
+    list.appendChild(note);
   }
 
-  list.innerHTML = '';
+  if(candidates.length === 0){
+    const empty = document.createElement('div');
+    empty.className = 'setup-empty';
+    empty.textContent = (stalled.length || deferred.length)
+      ? 'Every drive that answered already has a library folder.'
+      : 'Every connected drive already has a library folder.';
+    list.appendChild(empty);
+  }
+
   candidates.forEach(c => {
     // Columns: checkbox, drive letter, name, then any badges on the right.
     const row = document.createElement('label');
@@ -1959,6 +2077,63 @@ async function openSetup(){
     row.append(box, letter, name, badges);
     list.appendChild(row);
   });
+
+  renderDeferred(list, deferred);
+}
+
+/* Network drives left unchecked, with the button that checks them. They are
+   listed by name and greyed rather than hidden, so it is clear they exist
+   and were skipped on purpose rather than missed. */
+function renderDeferred(list, deferred){
+  if(!deferred.length) return;
+
+  const wrap = document.createElement('div');
+  wrap.className = 'setup-deferred';
+
+  const head = document.createElement('div');
+  head.className = 'setup-defer-head';
+
+  const label = document.createElement('span');
+  label.textContent = deferred.length === 1
+    ? '1 network drive not checked'
+    : `${deferred.length} network drives not checked`;
+
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'setup-defer-btn';
+  btn.textContent = 'Check network drives';
+  btn.onclick = (e) => {
+    // Stop the click here. Reloading the list detaches this button, and the
+    // document handler that closes the panel on an outside click then asks
+    // an orphaned node whether it sits inside the panel - which it no longer
+    // does, so the panel would shut the moment it was asked to refresh.
+    e.stopPropagation();
+    btn.disabled = true;
+    btn.textContent = 'Checking…';
+    openSetup(true);
+  };
+
+  head.append(label, btn);
+  wrap.appendChild(head);
+
+  deferred.forEach(d => {
+    const row = document.createElement('div');
+    row.className = 'setup-row';
+    const spacer = document.createElement('span');
+
+    const letter = document.createElement('span');
+    letter.className = 'rletter';
+    letter.textContent = d.letter;
+
+    const name = document.createElement('span');
+    name.className = 'rname';
+    name.textContent = d.name;
+
+    row.append(spacer, letter, name, document.createElement('span'));
+    wrap.appendChild(row);
+  });
+
+  list.appendChild(wrap);
 }
 
 /* Flags for drives you probably do not want a media library on. */
@@ -2860,7 +3035,7 @@ async function runSearch(q){
 }
 
 /* Label plus the live drive letter, without saying the letter twice. An
-   auto-detected label already looks like "HDD-2TB-01 (D:)", and a drive can
+   auto-detected label already looks like "HDD-4TB-02 (D:)", and a drive can
    be renamed to anything, so check before appending. */
 function driveTagText(r){
   if(!r.connected) return r.drive_label;

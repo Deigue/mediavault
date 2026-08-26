@@ -276,7 +276,15 @@ def _copy_with_robocopy(source, target, is_dir, log):
 # Command lines for the external copiers, as (args builder, friendly name).
 def _external_args(tool, tool_path, source, target_parent):
     if tool == "fastcopy":
-        return [tool_path, "/cmd=diff", "/auto_close", f"/to={target_parent}", source]
+        # The trailing separator on /to= is required, not cosmetic. Without
+        # it FastCopy will not create the folder it is copying, and instead
+        # empties the source's contents straight into the parent - so moving
+        # "Videos/TV Shows/Some Show" lands its "Season 01" beside the other
+        # titles and the show folder never appears. os.path.join with an
+        # empty tail is how the separator is added without doubling one that
+        # is already there, as on a drive root.
+        return [tool_path, "/cmd=diff", "/auto_close",
+                f"/to={os.path.join(target_parent, '')}", source]
     # TeraCopy, and anything custom, take: <exe> Copy <source> <target dir>
     return [tool_path, "Copy", source, target_parent, "/Close"]
 
@@ -301,17 +309,33 @@ def _copy_with_external(tool, source, target, is_dir, tool_path, log, expected_b
     log(f"    {os.path.basename(tool_path)} finished")
 
 
-def wait_until_settled(target, expected_bytes, log, idle_timeout=120, poll=1.0):
+def wait_until_settled(target, expected_bytes, log, idle_timeout=120,
+                       absent_timeout=30, poll=1.0):
     """
     Wait for a copy to stop changing.
 
     Returns once the target reaches the expected size, or once it has not
     grown for idle_timeout seconds. The idle case is not treated as an error
     here: verify_copy() is what decides whether the result is acceptable.
+
+    Nothing appearing at all is different, and is treated as an error. Every
+    copier creates its destination within a second or two of starting, so a
+    target that is still missing after absent_timeout means the copy is
+    landing somewhere else entirely - a wrong argument rather than a slow
+    disk. Waiting out the full idle_timeout for that only leaves the caller
+    reporting 0% for two minutes before failing anyway.
     """
+    started = time.time()
     last_size, last_change = -1, time.time()
     while True:
-        size = measure(target)[1] if os.path.exists(target) else 0
+        exists = os.path.exists(target)
+        if not exists and time.time() - started > absent_timeout:
+            raise MoveError(
+                f"Nothing was written to {target}. The copy tool ran but put "
+                f"its output somewhere else - check its arguments."
+            )
+
+        size = measure(target)[1] if exists else 0
         if expected_bytes and size >= expected_bytes:
             return
         if size != last_size:

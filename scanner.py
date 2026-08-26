@@ -38,6 +38,7 @@ import argparse
 import os
 import shutil
 import sys
+import threading
 import time
 
 import db
@@ -272,7 +273,7 @@ def resolve_label(drive_id, drive_root, label=None):
         return remembered, "remembered from a previous scan"
 
     drive_letter = os.path.splitdrive(drive_root)[0]  # e.g. "D:"
-    vol_label = driveid.get_windows_volume_label(drive_root)
+    vol_label = driveid.get_drive_name(drive_root)
     if vol_label:
         auto = f"{vol_label} ({drive_letter})" if drive_letter else vol_label
     else:
@@ -393,11 +394,142 @@ def list_mounted_roots():
     return {f"{chr(ord('A') + i)}:\\" for i in range(26) if mask & (1 << i)}
 
 
-_connected_cache = {"checked_at": 0.0, "drives": {}}
+# A network drive whose far end has gone away - a mapped share on a PC that
+# is now off, an rclone mount whose phone left the wifi - stays mounted and
+# keeps its letter, but every read against it blocks until Windows gives up.
+# That can be tens of seconds, and it is enough to wedge the dashboard, since
+# listing drives touches every mounted root in turn.
+#
+# So each root is probed on its own throwaway thread and given a couple of
+# seconds to answer. A root that misses the deadline is treated as absent and
+# remembered, because the thread behind it is still stuck in the kernel and
+# will stay that way; without the cooldown every later request would start
+# another one and pile them up.
+# A local disk answers in milliseconds, so anything approaching a second
+# means it is gone. A network drive is different: a share on a PC that has
+# let its disks spin down, or a phone whose wifi is in power-save, routinely
+# takes several seconds to answer the first time and is perfectly healthy.
+# One timeout for both either drops working network drives or leaves the
+# page waiting on dead local ones, so they get their own.
+PROBE_TIMEOUT_SECONDS = 2.5
+NETWORK_PROBE_TIMEOUT_SECONDS = 10.0
+UNRESPONSIVE_COOLDOWN_SECONDS = 30.0
+
+
+def probe_timeout_for(root):
+    """How long this root gets to answer, by what kind of drive it is."""
+    return (NETWORK_PROBE_TIMEOUT_SECONDS
+            if get_drive_type(root) == DRIVE_REMOTE
+            else PROBE_TIMEOUT_SECONDS)
+
+
+def ensure_readable(root):
+    """
+    Raise OSError if this drive cannot be listed at all.
+
+    Worth doing explicitly, because has_library_folders answers False for
+    both a drive with no library folder and one that could not be read -
+    find_top_level_matches catches the error and returns nothing. Without
+    this check a share whose host is switched off looks exactly like an
+    empty drive, and gets offered as something to set up.
+    """
+    with os.scandir(root) as entries:
+        next(iter(entries), None)
+
+_unresponsive = {}
+
+
+def _mark_unresponsive(root):
+    _unresponsive[root] = time.monotonic()
+
+
+def _clear_unresponsive(root):
+    _unresponsive.pop(root, None)
+
+
+def is_unresponsive(root):
+    """Did this root recently fail to answer inside the timeout?"""
+    failed_at = _unresponsive.get(root)
+    return (failed_at is not None
+            and time.monotonic() - failed_at < UNRESPONSIVE_COOLDOWN_SECONDS)
+
+
+def unresponsive_roots():
+    """
+    Roots that are mounted but could not be read, so the UI can say so
+    rather than silently dropping a drive the user can plainly see in
+    Explorer. Covers both the ones that timed out and the ones that failed
+    outright, since to anyone looking at the page those are the same thing.
+    """
+    return sorted(r for r in _unresponsive if is_unresponsive(r))
+
+
+def probe_roots(roots, work, timeout=probe_timeout_for):
+    """
+    Run work(root) against every root at once, dropping any that hang.
+
+    Returns {root: result} for the roots that answered in time. Threads are
+    started together rather than one after another, so the whole call costs
+    one timeout rather than one per drive. They are daemon threads: a stuck
+    one must never keep the interpreter from exiting.
+
+    timeout is either a number of seconds or, by default, a function of the
+    root - which is what lets a network share have longer than a local disk
+    while both are still probed in the same pass.
+    """
+    seconds_for = timeout if callable(timeout) else (lambda _root: timeout)
+
+    results = {}
+    finished = set()
+    threads = []
+
+    for root in roots:
+        if is_unresponsive(root):
+            continue
+
+        def run(r=root):
+            # Raising still counts as finished. Only a root that never came
+            # back at all is unresponsive - an error is an answer. This
+            # matters because for some probes an error is the ordinary case:
+            # reading the marker file from a drive that has never been
+            # scanned is meant to fail, and treating that as a dead drive
+            # would condemn every healthy drive awaiting setup.
+            try:
+                results[r] = work(r)
+            except OSError:
+                pass
+            finally:
+                finished.add(r)
+
+        thread = threading.Thread(target=run, daemon=True, name=f"probe-{root}")
+        thread.start()
+        threads.append((root, thread))
+
+    # Each root is measured from the same start, since they all began
+    # together; only the allowance differs.
+    started = time.monotonic()
+    for root, thread in threads:
+        deadline = started + seconds_for(root)
+        thread.join(max(0.0, deadline - time.monotonic()))
+        if root in finished:
+            _clear_unresponsive(root)
+        else:
+            _mark_unresponsive(root)
+
+    return results
+
+
 CONNECTED_CACHE_SECONDS = 5.0
 
+# Kept per include_network, because the two answers are genuinely different
+# sets and one must never be served in place of the other.
+_connected_cache = {
+    True: {"checked_at": 0.0, "drives": {}},
+    False: {"checked_at": 0.0, "drives": {}},
+}
 
-def get_connected_drives(max_age=CONNECTED_CACHE_SECONDS):
+
+def get_connected_drives(max_age=CONNECTED_CACHE_SECONDS, include_network=True):
     """
     Which known drives are plugged in right now: {drive_id: root_path}.
 
@@ -408,24 +540,33 @@ def get_connected_drives(max_age=CONNECTED_CACHE_SECONDS):
     Results are cached for a few seconds. Search calls this on every
     keystroke, and hitting all 26 possible drive letters each time would
     spin up sleeping external drives for no reason.
+
+    include_network False leaves the mapped drives out and does not read
+    them at all. A host that is switched off refuses in milliseconds, but
+    one that is merely asleep leaves the read hanging until the timeout - so
+    without this the local drives would wait on it, which is the whole thing
+    deferring the network check was meant to avoid.
     """
+    cache = _connected_cache[bool(include_network)]
     now = time.monotonic()
-    if now - _connected_cache["checked_at"] < max_age:
-        return _connected_cache["drives"]
+    if now - cache["checked_at"] < max_age:
+        return cache["drives"]
+
+    roots = list_mounted_roots()
+    if not include_network:
+        roots = {r for r in roots if get_drive_type(r) != DRIVE_REMOTE}
+
+    def read_marker(root):
+        with open(os.path.join(root, driveid.MARKER_NAME), "r") as f:
+            return f.read().strip()
 
     found = {}
-    for root in list_mounted_roots():
-        marker = os.path.join(root, driveid.MARKER_NAME)
-        try:
-            with open(marker, "r") as f:
-                drive_id = f.read().strip()
-            if drive_id:
-                found[drive_id] = root
-        except OSError:
-            continue
+    for root, drive_id in probe_roots(roots, read_marker).items():
+        if drive_id:
+            found[drive_id] = root
 
-    _connected_cache["checked_at"] = now
-    _connected_cache["drives"] = found
+    cache["checked_at"] = now
+    cache["drives"] = found
     return found
 
 
@@ -590,6 +731,7 @@ def find_scannable_drives():
     by_root = {root: drive_id for drive_id, root in connected.items()}
 
     found = []
+    unknown_roots = []
     for root in sorted(list_mounted_roots()):
         drive_type = get_drive_type(root)
         if drive_type is not None and drive_type not in SCANNABLE_DRIVE_TYPES:
@@ -600,49 +742,106 @@ def find_scannable_drives():
             found.append({"root": root, "drive_id": drive_id,
                           "label": known[drive_id]["label"], "reason": "known drive"})
             continue
+        unknown_roots.append(root)
 
-        try:
-            if has_library_folders(root):
-                found.append({"root": root, "drive_id": drive_id,
-                              "label": None, "reason": "has a library folder"})
-        except OSError:
-            continue
+    def describe(root):
+        ensure_readable(root)
+        return {
+            "has_library": has_library_folders(root),
+            # No stored label yet, so fall back to whatever the volume calls
+            # itself - the confirm prompt reads better with a name than with
+            # a bare drive letter.
+            "label": driveid.get_drive_name(root),
+        }
+
+    for root, info in probe_roots(unknown_roots, describe).items():
+        if info["has_library"]:
+            found.append({"root": root, "drive_id": by_root.get(root),
+                          "label": info["label"],
+                          "reason": "has a library folder"})
 
     return found
 
 
-def find_setup_candidates():
+def deferred_network_roots():
+    """
+    Mounted network drives, named, without touching the network.
+
+    The share name comes from the local redirector's own table, so it is
+    there in well under a millisecond whether or not the far end is awake.
+    That is what lets the dashboard list a network drive by its proper name
+    and offer to check it, rather than either hiding it or blocking on it.
+    """
+    out = []
+    for root in sorted(list_mounted_roots()):
+        if get_drive_type(root) != DRIVE_REMOTE:
+            continue
+        out.append({
+            "root": root,
+            "letter": drive_letter_for(root) or root,
+            "name": driveid.get_share_name(root) or "(network drive)",
+        })
+    return out
+
+
+def find_setup_candidates(include_network=True):
     """
     Connected drives that do NOT have the folder layout yet.
 
     These are the drives the dashboard can offer to set up. A drive with no
     library folder is never scanned, so it does not appear in the database at
     all, which is why this looks at mounted volumes rather than known drives.
+
+    With include_network False the network drives are left out entirely and
+    not touched at all. A share whose host is asleep cannot be woken by
+    reading it, so the wait before giving up is dead time - and it is spent
+    in front of someone who only wanted to see their local disks. The
+    dashboard lists those drives separately from deferred_network_roots()
+    and checks them when asked.
     """
     known = {d["drive_id"] for d in db.get_all_drives()}
-    connected = get_connected_drives(max_age=0)
+    connected = get_connected_drives(max_age=0, include_network=include_network)
     by_root = {root: drive_id for drive_id, root in connected.items()}
 
-    candidates = []
+    # get_drive_type only asks Windows what kind of letter this is, which is
+    # answered from memory and cannot block, so it is safe to do up front and
+    # narrows what has to be probed.
+    types = {}
     for root in sorted(list_mounted_roots()):
         drive_type = get_drive_type(root)
         if drive_type is not None and drive_type not in SCANNABLE_DRIVE_TYPES:
             continue
-        try:
-            if has_library_folders(root):
-                continue
-        except OSError:
+        if drive_type == DRIVE_REMOTE and not include_network:
+            continue
+        types[root] = drive_type
+
+    # These all touch the volume itself, so they go on the probe thread
+    # together - one hang costs one timeout rather than three.
+    def describe(root):
+        ensure_readable(root)
+        return {
+            "has_library": has_library_folders(root),
+            "name": driveid.get_drive_name(root),
+        }
+
+    described = probe_roots(types, describe)
+
+    candidates = []
+    for root, drive_type in types.items():
+        info = described.get(root)
+        # Absent means the drive never answered. Offering to scaffold folders
+        # onto a drive we cannot even read would only fail later, and noisily.
+        if info is None or info["has_library"]:
             continue
 
         drive_id = by_root.get(root)
-        volume_label, _serial = driveid.get_volume_info(root)
         # Letter and name are kept apart so the UI can lay them out in
         # columns. Joining them here is what made the letter appear twice.
         candidates.append({
             "root": root,
             "drive_id": drive_id,
             "letter": drive_letter_for(root) or root,
-            "name": volume_label or "(no volume label)",
+            "name": info["name"] or "(no volume label)",
             "known": drive_id in known if drive_id else False,
             "removable": drive_type == DRIVE_REMOVABLE,
         })

@@ -625,8 +625,35 @@ def api_nodes_delete():
 
 @app.route("/api/drives/setup-candidates")
 def api_setup_candidates():
-    """Connected drives that do not have the folder layout yet."""
-    return jsonify({"ok": True, "candidates": scanner.find_setup_candidates()})
+    """
+    Connected drives that do not have the folder layout yet.
+
+    Network drives are skipped unless ?network=1, because a share whose host
+    is asleep takes ten seconds to give up and cannot be woken by being read
+    anyway. The page loads the local drives immediately and offers to check
+    the network ones on request.
+    """
+    include_network = request.args.get("network", "") in ("1", "true", "yes")
+
+    # Order matters: probing is what discovers an unresponsive drive, so the
+    # list is only accurate once the candidates have been gathered.
+    candidates = scanner.find_setup_candidates(include_network=include_network)
+    stalled = scanner.unresponsive_roots()
+
+    # Named from the local redirector's table, so this costs nothing even
+    # with every host switched off.
+    deferred = [] if include_network else scanner.deferred_network_roots()
+
+    return jsonify({
+        "ok": True,
+        "candidates": candidates,
+        "deferred": deferred,
+        # Drives that were checked, are mounted, and did not answer in time.
+        # Worth naming rather than leaving out: a drive plainly visible in
+        # Explorer that is simply absent here reads as a bug in MediaVault.
+        "unresponsive": [{"root": r, "letter": scanner.drive_letter_for(r) or r}
+                         for r in stalled],
+    })
 
 
 @app.route("/api/drive/scaffold", methods=["POST"])
@@ -723,10 +750,37 @@ def api_drive_delete():
 # Override with MEDIAVAULT_HOST / MEDIAVAULT_PORT, which is handy for running
 # a second copy while the usual one is already on 5151.
 HOST = os.environ.get("MEDIAVAULT_HOST", "127.0.0.1")
-PORT = int(os.environ.get("MEDIAVAULT_PORT", "5151"))
+
+# --dev (or MEDIAVAULT_DEV=1) swaps waitress for Flask's own server, which
+# watches the source and restarts itself whenever a file changes - so edits
+# show up on a refresh instead of after a restart. It also picks a different
+# default port, because the everyday copy started by the scheduled task is
+# already holding 5151 and two servers cannot share it. Leaving that copy
+# running is the point: the dev one is a second instance beside it, not a
+# replacement.
+#
+# The flag exists as well as the variable because setting one for a single
+# command is spelt differently in every shell, and getting it subtly wrong
+# just starts the ordinary server on the ordinary port with no complaint.
+DEV = ("--dev" in sys.argv
+       or os.environ.get("MEDIAVAULT_DEV", "").strip().lower()
+       in ("1", "true", "yes", "on"))
+PORT = int(os.environ.get("MEDIAVAULT_PORT", "5152" if DEV else "5151"))
 
 if __name__ == "__main__":
     db.init_db()
+
+    if DEV:
+        print(f"MediaVault DEV on http://{HOST}:{PORT}  (auto-reloads on save)")
+        print("The everyday copy is untouched - restart its scheduled task to "
+              "pick these changes up for real.")
+        # debug=True brings the reloader and in-browser tracebacks, and makes
+        # Flask re-read templates too, so dashboard.html edits need no restart
+        # either. It binds localhost, which is what makes the debugger's
+        # code-execution console acceptable here.
+        app.run(host=HOST, port=PORT, debug=True)
+        raise SystemExit
+
     # Waitress is a proper server meant to stay up for months, unlike Flask's
     # built-in one, which is for development. It also gives a fixed pool of
     # worker threads rather than a new thread per connection, which matters
