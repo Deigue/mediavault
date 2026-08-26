@@ -176,3 +176,73 @@ A few things worth knowing:
   `powershell "$env:MEDIAVAULT_PORT=5152; py dashboard.py"`.
 - Idle cost is roughly 40 MB and no measurable CPU, because it waits on a
   socket rather than polling.
+
+## Shortcuts
+
+Optional. Two scripts put shortcuts in your Start Menu for the things you
+would otherwise do through Task Scheduler or a terminal. Install both with:
+
+```
+powershell -File scripts\install-flow-shortcuts.ps1; powershell -File scripts\install-phone-shortcuts.ps1
+```
+
+Both take `-Uninstall` to remove what they added. They write to the per-user
+Start Menu, so no administrator rights are needed and nothing outside your own
+profile is touched.
+
+Windows Start Menu search finds them, and so does
+[Flow Launcher](https://www.flowlauncher.com/), whose Program plugin indexes
+the Start Menu without any plugin to install. Flow only rescans periodically,
+so press **Reload Plugin Data** in its settings to see them immediately.
+
+### Dashboard
+
+| Shortcut                          | What it does                                     |
+| --------------------------------- | ------------------------------------------------ |
+| **MediaVault Dashboard**          | Start the dashboard and open it in your browser  |
+| **MediaVault Restart Dashboard**  | Restart it, so Python changes take effect        |
+| **MediaVault Stop Dashboard**     | Stop it                                          |
+| **MediaVault Dashboard Status**   | Is it running, for how long, and on which port   |
+
+These share a prefix because they are four views of one thing and read better
+listed together. They report through a message box rather than a console, so
+nothing flashes on screen.
+
+### Phones
+
+Mount a phone's storage as a drive letter, so MediaVault can index it like any
+other drive. Needs [rclone](https://rclone.org/) and
+[WinFsp](https://winfsp.dev/) on the PC, and an SSH server on the phone -
+[Termux](https://termux.dev/) with `openssh` is the usual way, since it is a
+real OpenSSH and so can report how full the phone is.
+
+| Shortcut          | What it does                                                        |
+| ----------------- | ------------------------------------------------------------------- |
+| **Add Phone**     | Ask for address, login, drive letter and volume name, then set it up |
+| **Mount Phone**   | Mount it. The window stays open; closing it unmounts                 |
+| **Unmount Phone** | Unmount it and stop rclone                                          |
+| **Remove Phone**  | Forget a phone and delete its rclone remote                         |
+| **List Phones**   | Which phones are set up, and which are mounted right now            |
+
+These are named verb first, so typing `mount` reaches the thing that mounts
+without a prefix in the way.
+
+Mounting is deliberately on demand. Nothing runs in the background and there is
+no scheduled task: between mounts there is no process at all, which is the only
+way to be certain a mount is never competing for CPU while you are doing
+something that cares. The open window is the honest signal that rclone is
+running, and closing it is the plainest way to stop.
+
+**Add Phone** tests the connection before saving, and discards the half-made
+remote if it cannot reach the phone. Passwords are handed to rclone through a
+pipe rather than a command line, and kept obscured in rclone's own config;
+`scripts/phones.json` holds only the drive letter, volume name and path, and is
+git-ignored either way.
+
+All of this is equally usable without the shortcuts:
+
+```
+powershell -File scripts\phone.ps1 add
+powershell -File scripts\phone.ps1 mount -Name <name>
+powershell -File scripts\phone.ps1 list
+```

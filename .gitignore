@@ -8,5 +8,6 @@ __pycache__/
 # Local settings, including paths to your own copy tool.
 config.json
 
-# The mount supervisor's log, which names your own remotes and drives.
-scripts/mount-phone.log
+# Your own phones - drive letters and volume names. The credentials are not
+# here, they live in rclone's own config.
+scripts/phones.json
