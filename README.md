@@ -33,7 +33,8 @@ and again whenever you add, move or delete files.
 - **Delete anything**, one item or a selection, to the Recycle Bin or
   permanently.
 - **Rename or forget** a drive.
-- **Tag titles**, one or many at once, and filter by tag.
+- **Tag titles**, and filter by tag. **★ Star** titles worth protecting, **▶ Watching** for currently watching
+- **Get smart suggestions** for what to move or back up based on space and drive types.
 - **Filter by backup state** — backed up, partly backed up, split across
   drives, or nowhere else.
 - **Search** across every drive and jump to a result's place in the tree.
@@ -44,10 +45,47 @@ and again whenever you add, move or delete files.
 - **Move titles to another drive**, landing in the matching category.
 - **Back up titles to another drive**, into the target's redundancy folder.
 - **Set how each drive is treated** — SSD, HDD or USB, which sets its free
-  space threshold (15% for an SSD, 10% for a mechanical disk). Tick **Cold
-  storage** on a drive you have deliberately filled and only read from.
+  space threshold: 15% for an SSD, which slows sharply once it is nearly
+  full, and 10% for a mechanical disk, which suffers no wear from being full
+  but needs contiguous room for a large file to land. Tick **Cold storage**
+  on a drive you only read from and it is allowed to fill to 97%, since
+  fragmentation costs about one seek per extent and barely registers on a
+  large file read start to finish.
 - **Back up the database** to any rclone destination. Set the target in
   Settings; needs [rclone](https://rclone.org) installed and configured.
+
+## Suggestions
+
+The **Suggestions** button proposes what is worth moving or copying. Nothing
+happens until you tick something.
+
+| Kind      | Why it appears                           |
+| --------- | ---------------------------------------- |
+| `relief`  | A drive is getting too full              |
+| `protect` | A starred title exists in only one place |
+| `reclaim` | An SSD is holding bulk media             |
+
+Each proposal says why it is there and why that destination, and the
+destination can be changed. Drives that are not plugged in but have room are
+listed too, since "connect the Toshiba" is often the better answer.
+
+The ranking follows from two facts. Only writes wear an SSD, and a mechanical
+disk does not meaningfully wear from writes at all, so **SSD to HDD is the
+cheapest direction there is** and the reverse is never suggested. And freeing
+N bytes costs N bytes written whatever you pick, so relief stops as soon as
+the drive is back under its threshold.
+
+Backups rank targets the other way round. Piling every copy onto the biggest
+disk means that disk failing takes out most of your protection at once, so
+backups prefer drives holding **fewest** backups already, then removable
+drives that can be kept elsewhere, and rank SSDs last. A **backup spread**
+panel shows how concentrated things are and warns when one drive holds too
+much of it.
+
+Titles added in the last 21 days are left alone as probably still in use, and
+anything tagged **Watching** is never proposed for a move at all. Backups are
+still offered for a title you are watching, since copying does not touch the
+original.
 
 ## Moving and backing up
 
@@ -197,12 +235,12 @@ so press **Reload Plugin Data** in its settings to see them immediately.
 
 ### Dashboard
 
-| Shortcut                          | What it does                                     |
-| --------------------------------- | ------------------------------------------------ |
-| **MediaVault Dashboard**          | Start the dashboard and open it in your browser  |
-| **MediaVault Restart Dashboard**  | Restart it, so Python changes take effect        |
-| **MediaVault Stop Dashboard**     | Stop it                                          |
-| **MediaVault Dashboard Status**   | Is it running, for how long, and on which port   |
+| Shortcut                         | What it does                                    |
+| -------------------------------- | ----------------------------------------------- |
+| **MediaVault Dashboard**         | Start the dashboard and open it in your browser |
+| **MediaVault Restart Dashboard** | Restart it, so Python changes take effect       |
+| **MediaVault Stop Dashboard**    | Stop it                                         |
+| **MediaVault Dashboard Status**  | Is it running, for how long, and on which port  |
 
 These share a prefix because they are four views of one thing and read better
 listed together. They report through a message box rather than a console, so
@@ -216,13 +254,13 @@ other drive. Needs [rclone](https://rclone.org/) and
 [Termux](https://termux.dev/) with `openssh` is the usual way, since it is a
 real OpenSSH and so can report how full the phone is.
 
-| Shortcut          | What it does                                                        |
-| ----------------- | ------------------------------------------------------------------- |
+| Shortcut          | What it does                                                         |
+| ----------------- | -------------------------------------------------------------------- |
 | **Add Phone**     | Ask for address, login, drive letter and volume name, then set it up |
 | **Mount Phone**   | Mount it. The window stays open; closing it unmounts                 |
-| **Unmount Phone** | Unmount it and stop rclone                                          |
-| **Remove Phone**  | Forget a phone and delete its rclone remote                         |
-| **List Phones**   | Which phones are set up, and which are mounted right now            |
+| **Unmount Phone** | Unmount it and stop rclone                                           |
+| **Remove Phone**  | Forget a phone and delete its rclone remote                          |
+| **List Phones**   | Which phones are set up, and which are mounted right now             |
 
 These are named verb first, so typing `mount` reaches the thing that mounts
 without a prefix in the way.

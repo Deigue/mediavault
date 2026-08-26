@@ -1,12 +1,28 @@
 """
 drivetypes.py - what kind of drive is this, and how full should it get?
 
-The type matters because the sensible fill level differs. An SSD kept close
-to full has less spare area to work with, so writes slow down and wear
-levelling has less room to move; leaving headroom is worth it. A mechanical
-disk has no such problem, but its outermost tracks are the slowest and a
-nearly full volume fragments badly, so it is fine to fill one right up as
-long as you then treat it as an archive you read from rather than write to.
+The sensible fill level differs by type, and for mechanical disks it also
+depends on what the drive is for.
+
+SSDs slow down as they fill, mildly from about 85 percent and sharply past
+95, because the controller uses whatever space is unallocated as room to
+shuffle blocks around. Modern controllers do that with any free space on the
+drive, so setting aside a fixed reserve is no longer the practice it once
+was; simply not running near full is what matters. Only writes wear the
+cells, reads cost nothing.
+
+Mechanical disks do not wear from being full at all, and this library is
+made of large files read start to finish. Fragmentation costs one seek per
+extent, so a 4 GB film split across ten extents loses about a tenth of a
+second on a read lasting forty. The familiar "keep 15 to 20 percent free"
+advice is aimed at general purpose drives full of small files, not at this.
+
+What does still matter on a full mechanical disk is writing: the space left
+is on the slower inner tracks and scattered, so a new file needs somewhere
+contiguous to land. That argues for keeping room for the largest file you
+would write, not for a defragmentation figure. So a working disk keeps 10
+percent, and one marked as cold storage, read from but not written to, is
+allowed to fill to 97.
 """
 
 import re
@@ -15,6 +31,11 @@ SSD = "ssd"
 HDD = "hdd"
 USB = "usb"
 UNKNOWN = "unknown"
+
+# A drive marked as cold storage is read from and not written to, so it can
+# be filled almost completely. The remainder is for the filesystem, not for
+# performance.
+COLD_STORAGE_FREE_PCT = 3
 
 # How much free space each type should keep, and why.
 SPACE_RULES = {
@@ -26,9 +47,9 @@ SPACE_RULES = {
     HDD: {
         "warn_free_pct": 10,
         "label": "HDD",
-        "reason": "Fine to fill, but writes get slow and fragmented near the end. "
-                  "Either move something off, or mark it as cold storage and stop "
-                  "writing to it.",
+        "reason": "No harm in being full, but new files have less contiguous room "
+                  "and land on the slower inner tracks. Move something off, or "
+                  "mark it as cold storage if you only read from it.",
     },
     USB: {
         "warn_free_pct": 10,
@@ -104,12 +125,18 @@ def evaluate(drive_type, free_bytes, total_bytes, cold_storage=False):
     threshold = rule["warn_free_pct"]
 
     if cold_storage:
+        # Read-only archive, so nearly all of it is usable. The small reserve
+        # left is for the filesystem itself, not for performance.
+        threshold = COLD_STORAGE_FREE_PCT
+        low = free_pct < threshold
         return {
             "free_pct": round(free_pct, 1),
             "threshold_pct": threshold,
-            "low": False,
-            "severity": "cold",
-            "message": "Cold storage, kept full on purpose and not written to.",
+            "low": low,
+            "severity": "critical" if low else "cold",
+            "message": ("Cold storage and genuinely nearly full. Nothing more "
+                        "will fit." if low else
+                        "Cold storage, kept full on purpose and only read from."),
         }
 
     low = free_pct < threshold

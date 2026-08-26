@@ -23,6 +23,8 @@ import moveops
 import movejob
 import scanner
 import scanjob
+import suggestions
+import tagging
 
 app = Flask(__name__)
 # Without this Jinja compiles the template once at first request and caches it,
@@ -197,6 +199,9 @@ def home():
         stats=stats,
         low_space_drives=low_space_drives,
         all_tags=all_tags,
+        system_tags=tagging.SYSTEM_TAGS,
+        star_tag=tagging.STAR_TAG,
+        watching_tag=tagging.WATCHING_TAG,
     )
 
 
@@ -418,6 +423,37 @@ def describe_target(d, mount, source_drive_id=None):
         "redundancy_h": human(redundancy["size_bytes"]),
         "same_drive": d["drive_id"] == source_drive_id,
     }
+
+
+@app.route("/api/suggestions")
+def api_suggestions():
+    """
+    What is worth moving or backing up, and why.
+
+    Proposals only. Ticking one hands it to the existing move or backup
+    machinery, so nothing new touches files.
+    """
+    include_recent = request.args.get("include_recent") == "1"
+    try:
+        recent_days = int(request.args.get("recent_days", suggestions.RECENT_DAYS))
+    except ValueError:
+        recent_days = suggestions.RECENT_DAYS
+
+    result = suggestions.build(include_recent=include_recent, recent_days=recent_days)
+    result["star_tag"] = tagging.STAR_TAG
+    result["watching_tag"] = tagging.WATCHING_TAG
+
+    # Sizes are formatted here so the page does not have to.
+    for group in result["groups"]:
+        group["would_free_h"] = human(group["would_free"])
+        group["deficit_h"] = human(group["deficit_bytes"])
+        for candidate in group["candidates"]:
+            candidate["size_h"] = human(candidate["size_bytes"])
+    for entry in result["redundancy"]["per_drive"]:
+        entry["size_h"] = human(entry["size_bytes"])
+    result["redundancy"]["total_h"] = human(result["redundancy"]["total_bytes"])
+
+    return jsonify({"ok": True, **result})
 
 
 @app.route("/api/move/targets")

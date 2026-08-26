@@ -73,10 +73,20 @@ def get_conn():
     return conn
 
 
-# Columns added to `drives` after the first release, with their defaults.
-# Each one records how a drive was last scanned, so a rescan started from the
-# dashboard repeats those options instead of falling back to the defaults and
-# quietly dropping folders from the index.
+# Columns added to `nodes` after the first release. Timestamps tell recently
+# arrived content from settled content, which is what stops the suggestion
+# engine proposing a move of something still being watched.
+#
+# For a folder, modified_at is the newest file anywhere inside it: "when did
+# the last episode arrive", which the folder's own timestamp never reflects.
+ADDED_NODE_COLUMNS = {
+    "created_at": "REAL",    # unix time, when it first appeared on the drive
+    "modified_at": "REAL",   # unix time, newest content anywhere inside it
+}
+
+# Columns added to `drives` after the first release. These record how a drive
+# was last scanned, so a rescan started from the dashboard repeats those
+# options instead of quietly falling back to the defaults.
 ADDED_DRIVE_COLUMNS = {
     "root_prefix": "TEXT",
     "redundancy_prefix": "TEXT",
@@ -96,6 +106,11 @@ def _migrate_schema(conn):
     for column, coltype in ADDED_DRIVE_COLUMNS.items():
         if column not in existing:
             conn.execute(f"ALTER TABLE drives ADD COLUMN {column} {coltype}")
+
+    existing = {r["name"] for r in conn.execute("PRAGMA table_info(nodes)")}
+    for column, coltype in ADDED_NODE_COLUMNS.items():
+        if column not in existing:
+            conn.execute(f"ALTER TABLE nodes ADD COLUMN {column} {coltype}")
 
 
 def init_db():
@@ -170,11 +185,13 @@ def replace_nodes(drive_id, node_list):
         real_parent_id = tmp_to_real.get(n["parent_tmp_id"]) if n["parent_tmp_id"] is not None else None
         cur.execute(
             """
-            INSERT INTO nodes (drive_id, parent_id, name, rel_path, is_dir, size_bytes, depth, root_type)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO nodes (drive_id, parent_id, name, rel_path, is_dir, size_bytes,
+                               depth, root_type, created_at, modified_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (drive_id, real_parent_id, n["name"], n["rel_path"], int(n["is_dir"]), n["size_bytes"],
-             n["depth"], n.get("root_type", "library")),
+             n["depth"], n.get("root_type", "library"),
+             n.get("created_at"), n.get("modified_at")),
         )
         tmp_to_real[n["tmp_id"]] = cur.lastrowid
 

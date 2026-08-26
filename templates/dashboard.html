@@ -417,6 +417,58 @@
   .set-effective b{ color:var(--accent); }
   .set-effective.warn b{ color:var(--warn); }
 
+  /* ---- suggestions ---- */
+  #suggest-backdrop .modal{ max-width:min(1000px, 100%); }
+  .sugg-intro{ font-size:12.5px; color:var(--text-dim); line-height:1.6; margin-bottom:10px; }
+  .sugg-recent{ margin-bottom:14px; font-size:12px; }
+  .sugg-body{ display:flex; flex-direction:column; gap:14px; margin-bottom:16px; }
+
+  .sugg-group{ border:1px solid var(--line); border-radius:9px; overflow:hidden; }
+  .sugg-group-head{ padding:11px 13px; background:rgba(255,255,255,0.02); }
+  .sugg-badge{
+    display:inline-block; font-family:'IBM Plex Mono',monospace; font-size:10px;
+    letter-spacing:0.06em; padding:2px 8px; border-radius:10px; margin-right:8px;
+  }
+  .sugg-badge.relief{ background:rgba(232,96,76,0.15); color:var(--crit); }
+  .sugg-badge.protect{ background:rgba(74,222,128,0.14); color:#4ADE80; }
+  .sugg-badge.reclaim{ background:rgba(125,211,252,0.14); color:#7DD3FC; }
+  .sugg-headline{ font-size:12.5px; color:var(--text-dim); line-height:1.6; margin-top:6px; }
+
+  .sugg-item{
+    display:grid; grid-template-columns:auto minmax(0,1fr); gap:10px;
+    padding:11px 13px; border-top:1px solid var(--line);
+  }
+  .sugg-item:hover{ background:rgba(255,255,255,0.02); }
+  .sugg-name{ font-size:13px; color:var(--text); }
+  .sugg-size{ font-family:'IBM Plex Mono',monospace; font-size:11.5px; color:var(--text-dim); }
+  .sugg-why{ font-size:11.5px; color:var(--text-faint); line-height:1.6; margin:5px 0 8px; }
+  .sugg-arrow{ font-size:12px; color:var(--text-dim); margin-bottom:4px; }
+  .sugg-arrow select{
+    background:var(--panel); border:1px solid var(--line); color:var(--text);
+    border-radius:6px; padding:4px 8px; font-size:12px;
+    font-family:'IBM Plex Sans',sans-serif; max-width:100%;
+  }
+  .sugg-target-why{ font-size:11px; color:var(--text-faint); line-height:1.55; }
+  .sugg-offline{
+    font-size:11px; color:var(--warn); margin-top:6px; line-height:1.55;
+  }
+  .sugg-note{
+    font-size:12px; color:#F0C89A; background:rgba(242,166,90,0.08);
+    border:1px solid rgba(242,166,90,0.3); border-radius:8px;
+    padding:10px 12px; line-height:1.6;
+  }
+  .sugg-empty{ font-size:13px; color:var(--text-dim); padding:16px 0; line-height:1.7; }
+  .sugg-spread{
+    border:1px solid var(--line); border-radius:9px; padding:11px 13px;
+    font-size:12px; color:var(--text-dim);
+  }
+  .sugg-spread-row{
+    display:grid; grid-template-columns:1fr auto auto; gap:10px;
+    padding:3px 0; font-size:11.5px;
+  }
+  .sugg-spread-bar{ height:4px; background:var(--seg-empty); border-radius:2px; margin-top:5px; }
+  .sugg-spread-fill{ height:100%; background:var(--purple); border-radius:2px; }
+
   /* ---- connected / disconnected indicators ---- */
   .conn-dot{
     display:inline-block; width:7px; height:7px; border-radius:50%;
@@ -439,6 +491,12 @@
   .filter-chip.clear{ color:var(--text-faint); }
 
   /* Backup state chips carry the same colour as the shield they match. */
+  .filter-chip.sys.star.active{
+    background:rgba(251,191,36,0.14); border-color:#FBBF24; color:#FBBF24;
+  }
+  .filter-chip.sys.watching.active{
+    background:rgba(125,211,252,0.14); border-color:#7DD3FC; color:#7DD3FC;
+  }
   .filter-chip.state{ display:inline-flex; align-items:center; gap:6px; }
   .filter-chip.state .chip-ic{ font-size:12px; line-height:1; }
   .filter-chip.full .chip-ic{ color:#4ADE80; }
@@ -699,6 +757,23 @@
   /* Sits between the name and the tags, and must never be squeezed away:
      it is the control that opens the list of other copies. */
   .shield-wrap{ flex-shrink:0; }
+  /* Star and watching are toggles rather than removable chips: one click on,
+     one click off, since they are the two tags that change behaviour. */
+  .sys-tag{
+    background:none; border:1px solid var(--line); cursor:pointer;
+    border-radius:20px; padding:1px 6px; font-size:11px; line-height:1.45;
+    color:var(--text-faint); flex-shrink:0; transition:color .12s, border-color .12s, background .12s;
+  }
+  .sys-tag:hover{ border-color:var(--text-dim); color:var(--text-dim); }
+  .sys-tag.star.on{
+    color:#FBBF24; border-color:rgba(251,191,36,0.55); background:rgba(251,191,36,0.14);
+  }
+  .sys-tag.star.on:hover{ color:#FDE047; }
+  .sys-tag.watching.on{
+    color:#7DD3FC; border-color:rgba(125,211,252,0.55); background:rgba(125,211,252,0.14);
+  }
+  .sys-tag.watching.on:hover{ color:#BAE6FD; }
+
   .tag-chip.small{
     display:inline-flex; align-items:center; gap:4px; background:var(--panel-raised);
     border:1px solid var(--line); border-radius:20px; padding:2px 4px 2px 9px;
@@ -788,7 +863,9 @@
 <body>
 
 <datalist id="tag-suggestions">
-  {% for t in all_tags %}<option value="{{ t }}">{% endfor %}
+  {# The system tags are always offered, even before anything carries them. #}
+  {% for name, meta in system_tags.items() %}<option value="{{ name }}">{{ meta.label }}: {{ meta.meaning }}</option>{% endfor %}
+  {% for t in all_tags %}{% if t|lower not in system_tags %}<option value="{{ t }}">{% endif %}{% endfor %}
 </datalist>
 
 <header>
@@ -842,6 +919,7 @@
     </span>
     <button id="scan-btn" class="scan-btn" onclick="startScan()">Scan connected drives</button>
     <button id="setup-btn" class="scan-btn ghost" onclick="openSetup()">Set up a drive</button>
+    <button id="suggest-btn" class="scan-btn ghost" onclick="openSuggestions()" title="What is worth moving or backing up">Suggestions</button>
     <button id="settings-btn" class="scan-btn ghost" onclick="openSettings()" title="Choose the program that copies files">Settings</button>
     <button id="backup-btn" class="icon-btn backup-btn" onclick="runBackup()"
             title="Back up: copy the database to the backup target set in Settings" aria-label="Back up">
@@ -896,14 +974,14 @@
     </button>
   </div>
 
-  {% if all_tags %}
   <div class="filter-bar">
     <span class="filter-label">Tag</span>
-    {% for t in all_tags %}
+    <button class="filter-chip sys star" data-tag="{{ star_tag }}" onclick="toggleTagFilter(this)">★ Starred</button>
+    <button class="filter-chip sys watching" data-tag="{{ watching_tag }}" onclick="toggleTagFilter(this)">▶ Watching</button>
+    {% for t in all_tags %}{% if t|lower not in system_tags %}
       <button class="filter-chip" data-tag="{{ t }}" onclick="toggleTagFilter(this)">{{ t }}</button>
-    {% endfor %}
+    {% endif %}{% endfor %}
   </div>
-  {% endif %}
 
   <div class="filter-bar">
     <span id="filter-summary" class="filter-summary"></span>
@@ -931,9 +1009,20 @@
      The badge is rendered by node_meta, not in here, so it always comes
      first regardless of how many tags there are. #}
   {% macro tag_editor(node) %}
+    {% set starred = star_tag in node.tags|map('lower')|list %}
+    {% set watching = watching_tag in node.tags|map('lower')|list %}
     <span class="tags-inline" data-drive-id="{{ node.drive_id }}" data-rel-path="{{ node.rel_path }}" onclick="event.preventDefault()">
+      {# One click each, because these two drive what the suggestions do. #}
+      <button class="sys-tag star {{ 'on' if starred else '' }}"
+              data-tag="{{ star_tag }}"
+              title="{{ 'Starred: worth protecting' if starred else 'Star this, to mark it worth protecting' }}">★</button>
+      <button class="sys-tag watching {{ 'on' if watching else '' }}"
+              data-tag="{{ watching_tag }}"
+              title="{{ 'Watching: never suggested for a move' if watching else 'Mark as watching, so it is never moved' }}">▶</button>
       {% for t in node.tags %}
+      {% if t|lower not in [star_tag, watching_tag] %}
       <span class="tag-chip small" data-tag="{{ t }}">{{ t }}<button class="tag-remove" data-tag="{{ t }}" title="Remove tag">×</button></span>
+      {% endif %}
       {% endfor %}
       <button class="tag-add-btn" title="Add tag">+</button>
       <input class="tag-input" list="tag-suggestions" placeholder="tag name">
@@ -1244,6 +1333,28 @@
 
 <!-- Minimised jobs dock here rather than disappearing. An operation must
      never run with no way to see it. -->
+<div id="suggest-backdrop" class="modal-backdrop">
+  <div class="modal sugg-modal">
+    <div class="modal-title">Suggestions</div>
+    <div class="sugg-intro">
+      Nothing here happens until you tick it and press the button. Each one
+      says why it is suggested and why that destination.
+    </div>
+    <label class="ds-toggle sugg-recent">
+      <input type="checkbox" id="sugg-include-recent" onchange="loadSuggestions()">
+      Include titles added in the last <span id="sugg-recent-days">60</span> days
+    </label>
+    <div id="sugg-body" class="sugg-body"></div>
+    <div class="modal-actions">
+      <button class="bulk-btn ghost" onclick="closeSuggestions()">Close</button>
+      <button class="bulk-btn apply" id="sugg-go" onclick="runSuggestions()" disabled>
+        Do the ticked ones
+      </button>
+    </div>
+    <div class="modal-note" id="sugg-summary"></div>
+  </div>
+</div>
+
 <div id="settings-backdrop" class="modal-backdrop">
   <div class="modal">
     <div class="modal-title">Settings</div>
@@ -2167,6 +2278,259 @@ async function runSetup(){
   }, () => { btn.disabled = false; btn.textContent = 'Create folders'; });
 }
 
+/* ---------- suggestions ----------
+   Proposals with their reasoning. Ticking some and pressing the button hands
+   them to the same move and backup machinery used everywhere else, one
+   destination at a time, so nothing new touches files. */
+let suggestionData = null;
+
+async function openSuggestions(){
+  document.getElementById('suggest-backdrop').classList.add('show');
+  await loadSuggestions();
+}
+
+function closeSuggestions(){
+  document.getElementById('suggest-backdrop').classList.remove('show');
+}
+
+document.getElementById('suggest-backdrop').addEventListener('click', function(e){
+  if(e.target === this) closeSuggestions();
+});
+
+async function loadSuggestions(){
+  const body = document.getElementById('sugg-body');
+  body.innerHTML = '<div class="sugg-empty">Working out what is worth moving…</div>';
+  const recent = document.getElementById('sugg-include-recent').checked ? '1' : '0';
+  try{
+    suggestionData = await (await fetch('/api/suggestions?include_recent=' + recent)).json();
+  } catch(e){
+    body.innerHTML = '<div class="sugg-empty">Could not reach the server.</div>';
+    return;
+  }
+  renderSuggestions();
+}
+
+const SUGG_TITLES = {
+  relief: 'Running out of space',
+  protect: 'Worth keeping, but only in one place',
+  reclaim: 'SSD space worth freeing'
+};
+
+function renderSuggestions(){
+  const data = suggestionData;
+  const body = document.getElementById('sugg-body');
+  body.innerHTML = '';
+  document.getElementById('sugg-recent-days').textContent = data.recent_days;
+
+  (data.notes || []).forEach(text => {
+    const note = document.createElement('div');
+    note.className = 'sugg-note';
+    note.textContent = text;
+    body.appendChild(note);
+  });
+
+  if(!data.groups || data.groups.length === 0){
+    const empty = document.createElement('div');
+    empty.className = 'sugg-empty';
+    empty.textContent = data.skipped_recent
+      ? `Nothing to suggest. ${data.skipped_recent} title(s) were left alone as `
+        + `recently added; tick the box above to include them.`
+      : 'Nothing to suggest. Every drive is within its threshold.';
+    body.appendChild(empty);
+  }
+
+  (data.groups || []).forEach(group => body.appendChild(buildSuggestionGroup(group)));
+
+  if(data.redundancy && data.redundancy.total_titles){
+    body.appendChild(buildSpreadPanel(data.redundancy));
+  }
+
+  updateSuggestionSummary();
+}
+
+function buildSuggestionGroup(group){
+  const box = document.createElement('div');
+  box.className = 'sugg-group';
+
+  const head = document.createElement('div');
+  head.className = 'sugg-group-head';
+  const badge = document.createElement('span');
+  badge.className = 'sugg-badge ' + group.reason;
+  badge.textContent = group.reason;
+  const title = document.createElement('b');
+  title.textContent = SUGG_TITLES[group.reason] || group.reason;
+  head.append(badge, title);
+  const headline = document.createElement('div');
+  headline.className = 'sugg-headline';
+  headline.textContent = group.headline;
+  head.appendChild(headline);
+  box.appendChild(head);
+
+  group.candidates.forEach(c => box.appendChild(buildSuggestionItem(group, c)));
+  return box;
+}
+
+function buildSuggestionItem(group, candidate){
+  const row = document.createElement('div');
+  row.className = 'sugg-item';
+
+  const box = document.createElement('input');
+  box.type = 'checkbox';
+  box.className = 'sugg-check';
+  box.dataset.nodeId = candidate.node_id;
+  box.dataset.operation = group.reason === 'protect' ? 'copy' : 'move';
+  box.addEventListener('change', updateSuggestionSummary);
+
+  const right = document.createElement('div');
+
+  const name = document.createElement('div');
+  name.className = 'sugg-name';
+  name.textContent = candidate.name;
+  const size = document.createElement('span');
+  size.className = 'sugg-size';
+  size.textContent = '  ' + candidate.size_h;
+  name.appendChild(size);
+
+  const why = document.createElement('div');
+  why.className = 'sugg-why';
+  why.textContent = candidate.why;
+
+  // Destination, changeable, with the reasoning for the default.
+  const arrow = document.createElement('div');
+  arrow.className = 'sugg-arrow';
+  arrow.append(document.createTextNode(
+    group.reason === 'protect' ? 'Copy to ' : 'Move to '));
+  const select = document.createElement('select');
+  candidate.targets.forEach(t => {
+    const option = document.createElement('option');
+    option.value = t.drive_id;
+    option.textContent = `${t.label} · ${t.detail}`;
+    select.appendChild(option);
+  });
+  select.value = candidate.suggested_target;
+  select.addEventListener('change', () => {
+    const chosen = candidate.targets.find(t => t.drive_id === select.value);
+    targetWhy.textContent = chosen ? chosen.why : '';
+  });
+  arrow.appendChild(select);
+
+  const targetWhy = document.createElement('div');
+  targetWhy.className = 'sugg-target-why';
+  const first = candidate.targets.find(t => t.drive_id === candidate.suggested_target);
+  targetWhy.textContent = first ? first.why : '';
+
+  right.append(name, why, arrow, targetWhy);
+
+  // Drives that would suit but are not plugged in.
+  if((candidate.offline_targets || []).length){
+    const offline = document.createElement('div');
+    offline.className = 'sugg-offline';
+    offline.textContent = 'Also possible if connected: '
+      + candidate.offline_targets.map(o => `${o.label} (${o.free_h} free)`).join(', ');
+    right.appendChild(offline);
+  }
+
+  box.dataset.targetSelect = '1';
+  row.append(box, right);
+  row.selectEl = select;
+  box.selectEl = select;
+  return row;
+}
+
+function buildSpreadPanel(spread){
+  const box = document.createElement('div');
+  box.className = 'sugg-spread';
+  const head = document.createElement('div');
+  head.innerHTML = `<b>Backup spread.</b> ${spread.total_titles} backed up title(s), `
+    + `${spread.total_h}, across ${spread.drives_holding} drive(s).`;
+  box.appendChild(head);
+
+  spread.per_drive.filter(e => e.titles > 0).forEach(entry => {
+    const row = document.createElement('div');
+    row.className = 'sugg-spread-row';
+    const name = document.createElement('span');
+    name.textContent = entry.label + (entry.external ? ' (external)' : '');
+    const count = document.createElement('span');
+    count.textContent = `${entry.titles} title(s)`;
+    const pct = document.createElement('span');
+    pct.textContent = entry.share_pct + '%';
+    row.append(name, count, pct);
+    box.appendChild(row);
+
+    const bar = document.createElement('div');
+    bar.className = 'sugg-spread-bar';
+    const fill = document.createElement('div');
+    fill.className = 'sugg-spread-fill';
+    fill.style.width = entry.share_pct + '%';
+    bar.appendChild(fill);
+    box.appendChild(bar);
+  });
+  return box;
+}
+
+function checkedSuggestions(){
+  return [...document.querySelectorAll('.sugg-check:checked')];
+}
+
+function updateSuggestionSummary(){
+  const checked = checkedSuggestions();
+  const summary = document.getElementById('sugg-summary');
+  document.getElementById('sugg-go').disabled = checked.length === 0;
+
+  if(checked.length === 0){
+    summary.textContent = 'Tick the ones you want. Nothing happens until you do.';
+    return;
+  }
+  const moves = checked.filter(c => c.dataset.operation === 'move').length;
+  const copies = checked.length - moves;
+  const parts = [];
+  if(moves) parts.push(`${moves} move(s)`);
+  if(copies) parts.push(`${copies} backup(s)`);
+  summary.textContent = parts.join(' and ')
+    + '. These run one destination at a time, so a batch spanning several '
+    + 'drives is done in several passes.';
+}
+
+/* Only one job runs at a time, so the ticked items are grouped by
+   destination and operation, and the first group is started. The rest are
+   reported so it is clear what is left. */
+function runSuggestions(){
+  const checked = checkedSuggestions();
+  if(checked.length === 0) return;
+
+  const batches = new Map();
+  checked.forEach(box => {
+    const target = box.selectEl.value;
+    const key = box.dataset.operation + '|' + target;
+    if(!batches.has(key)) batches.set(key, {operation: box.dataset.operation,
+                                           target: target, ids: []});
+    batches.get(key).ids.push(Number(box.dataset.nodeId));
+  });
+
+  const groups = [...batches.values()];
+  const first = groups[0];
+  const remaining = groups.length - 1;
+
+  const button = document.getElementById('sugg-go');
+  button.disabled = true;
+  button.textContent = 'Starting…';
+
+  postJSON('/api/move', {node_ids: first.ids, target_drive_id: first.target,
+                         operation: first.operation},
+    (data) => {
+      button.textContent = 'Do the ticked ones';
+      closeSuggestions();
+      showMovePanel();
+      renderMoveJob(data.job);
+      pollMove();
+      if(remaining){
+        flashToast(`Started ${first.ids.length}. ${remaining} more group(s) go to `
+                 + `different drives, so run them after this finishes.`);
+      }
+    },
+    () => { button.disabled = false; button.textContent = 'Do the ticked ones'; });
+}
+
 /* ---------- settings ----------
    The copy program is picked here rather than by editing config.json. A page
    cannot see the real path of a file chosen in a browser dialog, so anything
@@ -2841,6 +3205,10 @@ document.addEventListener('keydown', function(e){
     closeSettings();
     return;
   }
+  if(document.getElementById('suggest-backdrop').classList.contains('show')){
+    closeSuggestions();
+    return;
+  }
   cancelRename();
   cancelTagInput();
   closeShieldPopovers();
@@ -3297,6 +3665,30 @@ function cascadeEmptyContainers(filtering){
     drive.classList.toggle('filtered-out', !anyVisible);
   });
 }
+
+/* ---------- star and watching toggles ---------- */
+document.addEventListener('click', function(e){
+  const toggle = e.target.closest('.sys-tag');
+  if(!toggle) return;
+  e.preventDefault();
+  e.stopPropagation();
+
+  const wrap = toggle.closest('.tags-inline');
+  const tag = toggle.dataset.tag;
+  const turningOn = !toggle.classList.contains('on');
+
+  postTag(wrap.dataset.driveId, wrap.dataset.relPath, tag,
+          turningOn ? 'add' : 'remove', () => {
+    toggle.classList.toggle('on', turningOn);
+    // Keep data-tags in step so the filters see the change straight away.
+    const node = wrap.closest('.dir-node') || wrap.closest('.file-node');
+    if(node){
+      const tags = new Set((node.dataset.tags || '').split('|').filter(Boolean));
+      if(turningOn) tags.add(tag); else tags.delete(tag);
+      node.dataset.tags = [...tags].join('|');
+    }
+  });
+});
 
 /* ---------- tag add/remove ---------- */
 document.addEventListener('click', function(e){

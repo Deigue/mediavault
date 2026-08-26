@@ -146,12 +146,13 @@ def build_nodes(drive_root, root_path, dir_sizes, next_id, root_type, allowed_su
     nodes = []
     counter = [next_id]  # threaded through via a mutable list for nested calls
 
-    def make_node(path, parent_tmp_id, depth, is_dir, size_override=None):
+    def make_node(path, parent_tmp_id, depth, is_dir, size_override=None,
+                  created_at=None, modified_at=None):
         tmp_id = counter[0]
         counter[0] += 1
         rel = os.path.relpath(path, drive_root)
         size = size_override if size_override is not None else dir_sizes.get(path, 0)
-        nodes.append({
+        record = {
             "tmp_id": tmp_id,
             "parent_tmp_id": parent_tmp_id,
             "name": os.path.basename(path),
@@ -160,16 +161,27 @@ def build_nodes(drive_root, root_path, dir_sizes, next_id, root_type, allowed_su
             "size_bytes": size,
             "depth": depth,
             "root_type": root_type,
-        })
-        return tmp_id
+            "created_at": created_at,
+            "modified_at": modified_at,
+        }
+        nodes.append(record)
+        return tmp_id, record
 
     def walk(path, parent_tmp_id, depth, at_root=False):
-        my_id = make_node(path, parent_tmp_id, depth, is_dir=True)
+        try:
+            folder_created = os.stat(path).st_ctime
+        except OSError:
+            folder_created = None
+        my_id, my_record = make_node(path, parent_tmp_id, depth, is_dir=True,
+                                     created_at=folder_created)
+        newest = None
+
         try:
             with os.scandir(path) as entries:
                 entry_list = list(entries)
         except OSError:
-            return
+            return newest
+
         for entry in entry_list:
             if entry.name.startswith(".") or entry.name == driveid.MARKER_NAME:
                 continue
@@ -178,13 +190,26 @@ def build_nodes(drive_root, root_path, dir_sizes, next_id, root_type, allowed_su
                 if entry.is_dir(follow_symlinks=False) and entry.path not in allowed_subfolders:
                     continue
             if entry.is_dir(follow_symlinks=False):
-                walk(entry.path, my_id, depth + 1)
+                child_newest = walk(entry.path, my_id, depth + 1)
+                if child_newest and (newest is None or child_newest > newest):
+                    newest = child_newest
             elif entry.is_file():
                 try:
-                    fsize = entry.stat().st_size
+                    stat = entry.stat()
+                    fsize, created, modified = stat.st_size, stat.st_ctime, stat.st_mtime
                 except OSError:
-                    fsize = 0
-                make_node(entry.path, my_id, depth + 1, is_dir=False, size_override=fsize)
+                    fsize, created, modified = 0, None, None
+                make_node(entry.path, my_id, depth + 1, is_dir=False, size_override=fsize,
+                          created_at=created, modified_at=modified)
+                # A downloaded file keeps its original mtime, so the moment it
+                # landed here is the creation time. Take whichever is later, so
+                # both a fresh download and an edited file count as recent.
+                for stamp in (created, modified):
+                    if stamp and (newest is None or stamp > newest):
+                        newest = stamp
+
+        my_record["modified_at"] = newest
+        return newest
 
     walk(root_path, None, 0, at_root=(allowed_subfolders is not None))
     return nodes, counter[0]
