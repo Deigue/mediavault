@@ -48,3 +48,24 @@ def default_tags_for_category(category_name):
     if is_anime:
         tags.append("Anime")
     return tags
+
+
+# One bucket per title for the counters, in the order they are shown. A title
+# lands in the first bucket that matches, so "Anime Movies" is not counted
+# twice.
+CATEGORY_BUCKETS = [
+    ("anime", "anime", lambda n: "anime" in n and not ("movie" in n or "film" in n)),
+    ("anime-movies", "anime films", lambda n: "anime" in n),
+    ("tv", "TV shows", lambda n: "tv" in n or "show" in n or "series" in n),
+    ("movies", "movies", lambda n: "movie" in n or "film" in n),
+    ("other", "other", lambda _n: True),
+]
+
+
+def bucket_for_category(category_name):
+    """Which counter a category folder belongs to. Returns (key, label)."""
+    name = (category_name or "").lower()
+    for key, label, matches in CATEGORY_BUCKETS:
+        if matches(name):
+            return key, label
+    return "other", "other"

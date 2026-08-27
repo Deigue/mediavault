@@ -372,6 +372,9 @@ def scan_and_store(drive_path, label=None, root_prefix=DEFAULT_ROOT_PREFIX,
     db.upsert_drive(drive_id, label, total, used, free, drive_root, scan_options)
     db.replace_nodes(drive_id, nodes)
     seed_default_tags(drive_id, nodes)
+    # A scan is the moment a drive may have appeared or moved letter, so the
+    # cheap cached answer stops being good enough.
+    invalidate_connected_cache()
 
     summary = {
         "drive_id": drive_id,
@@ -515,12 +518,73 @@ def probe_roots(roots, work, timeout=probe_timeout_for):
 
 CONNECTED_CACHE_SECONDS = 5.0
 
-# Kept per include_network, because the two answers are genuinely different
-# sets and one must never be served in place of the other.
-_connected_cache = {
-    True: {"checked_at": 0.0, "drives": {}},
-    False: {"checked_at": 0.0, "drives": {}},
-}
+# A mapped share answers in microseconds while its SMB session is alive and in
+# seconds once that session has gone idle, which is what made page loads
+# occasionally stall. Local volumes are always read on the spot, so they are
+# never wrong; the network answer is refreshed on a background thread and the
+# last one served meanwhile. The only staleness possible is a network drive
+# appearing or disappearing, which takes one refresh to notice.
+NETWORK_CACHE_SECONDS = 60.0
+
+_connected_lock = threading.Lock()
+_local_cache = {"checked_at": 0.0, "drives": {}}
+_network_cache = {"checked_at": 0.0, "drives": {}, "refreshing": False, "ever": False}
+
+
+def read_marker(root):
+    with open(os.path.join(root, driveid.MARKER_NAME), "r") as f:
+        return f.read().strip()
+
+
+def _probe_markers(roots):
+    """{drive_id: root} for the roots that carry a marker file."""
+    found = {}
+    for root, drive_id in probe_roots(roots, read_marker).items():
+        if drive_id:
+            found[drive_id] = root
+    return found
+
+
+def _split_roots():
+    local, network = set(), set()
+    for root in list_mounted_roots():
+        (network if get_drive_type(root) == DRIVE_REMOTE else local).add(root)
+    return local, network
+
+
+def _refresh_network(roots):
+    found = _probe_markers(roots)
+    with _connected_lock:
+        _network_cache.update(checked_at=time.monotonic(), drives=found,
+                              refreshing=False, ever=True)
+
+
+def _network_drives(roots, blocking):
+    """
+    The network half of the answer, refreshed off the request thread.
+
+    blocking is only true the first time, when there is no previous answer to
+    serve and returning nothing would look like the drives are unplugged.
+    """
+    with _connected_lock:
+        fresh = time.monotonic() - _network_cache["checked_at"] < NETWORK_CACHE_SECONDS
+        if fresh or not roots:
+            return dict(_network_cache["drives"])
+        must_wait = blocking and not _network_cache["ever"]
+        already = _network_cache["refreshing"]
+        if not must_wait and not already:
+            _network_cache["refreshing"] = True
+
+    if must_wait:
+        _refresh_network(roots)
+        with _connected_lock:
+            return dict(_network_cache["drives"])
+
+    if not already:
+        threading.Thread(target=_refresh_network, args=(roots,),
+                         name="mediavault-network-probe", daemon=True).start()
+    with _connected_lock:
+        return dict(_network_cache["drives"])
 
 
 def get_connected_drives(max_age=CONNECTED_CACHE_SECONDS, include_network=True):
@@ -528,33 +592,38 @@ def get_connected_drives(max_age=CONNECTED_CACHE_SECONDS, include_network=True):
     Which known drives are plugged in right now: {drive_id: root_path}.
 
     Reads the marker file from every mounted volume, since last_seen_path can
-    be stale or the letter may now belong to a different drive. Cached for a
-    few seconds because search calls this on every keystroke.
+    be stale or the letter may now belong to a different drive.
 
-    include_network False leaves mapped drives untouched, so local drives do
-    not wait on a sleeping host.
+    Local volumes are read on the spot and cached briefly, because search
+    calls this on every keystroke. Network drives are refreshed in the
+    background, so a sleeping host can never hold up a page load.
     """
-    cache = _connected_cache[bool(include_network)]
     now = time.monotonic()
-    if now - cache["checked_at"] < max_age:
-        return cache["drives"]
+    local_roots, network_roots = _split_roots()
 
-    roots = list_mounted_roots()
+    with _connected_lock:
+        local_fresh = now - _local_cache["checked_at"] < max_age
+        local = dict(_local_cache["drives"]) if local_fresh else None
+
+    if local is None:
+        local = _probe_markers(local_roots)
+        with _connected_lock:
+            _local_cache.update(checked_at=now, drives=local)
+
     if not include_network:
-        roots = {r for r in roots if get_drive_type(r) != DRIVE_REMOTE}
+        return local
 
-    def read_marker(root):
-        with open(os.path.join(root, driveid.MARKER_NAME), "r") as f:
-            return f.read().strip()
-
-    found = {}
-    for root, drive_id in probe_roots(roots, read_marker).items():
-        if drive_id:
-            found[drive_id] = root
-
-    cache["checked_at"] = now
-    cache["drives"] = found
+    found = dict(local)
+    found.update(_network_drives(network_roots, blocking=True))
     return found
+
+
+def invalidate_connected_cache():
+    """Force the next lookup to read the drives again. Called after a scan or
+    a move, when being right matters more than being quick."""
+    with _connected_lock:
+        _local_cache["checked_at"] = 0.0
+        _network_cache["checked_at"] = 0.0
 
 
 def drive_letter_for(root_path):

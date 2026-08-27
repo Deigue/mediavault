@@ -58,12 +58,16 @@ CREATE TABLE IF NOT EXISTS tags (
 
 
 def get_conn():
+    """
+    A connection with the per-connection pragmas set.
+
+    journal_mode is not among them: WAL is a property of the file, set once by
+    init_db, and asking for it on every connect takes a lock for nothing.
+    """
     conn = sqlite3.connect(DB_PATH, timeout=15)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    # WAL lets the dashboard read while a scan writes; busy_timeout gives a
-    # blocked writer time to wait its turn rather than failing instantly.
-    conn.execute("PRAGMA journal_mode = WAL")
+    # Lets a blocked writer wait its turn rather than failing instantly.
     conn.execute("PRAGMA busy_timeout = 10000")
     conn.execute("PRAGMA synchronous = NORMAL")
     return conn
@@ -106,6 +110,9 @@ def _migrate_schema(conn):
 
 def init_db():
     conn = get_conn()
+    # WAL lets the dashboard read while a scan writes. It sticks to the file,
+    # so this is the only place that has to ask for it.
+    conn.execute("PRAGMA journal_mode = WAL")
     conn.executescript(SCHEMA)
     _migrate_schema(conn)
     conn.commit()
@@ -391,22 +398,42 @@ def get_largest_folders(drive_id, limit=8, min_depth=2):
     are, since deleting the title deletes them anyway.
     """
     conn = get_conn()
-
-    # Parent and depth maps, so ancestor chains cost no extra queries.
-    all_rows = conn.execute(
-        "SELECT id, parent_id, depth FROM nodes WHERE drive_id = ? AND is_dir = 1", (drive_id,)
-    ).fetchall()
-    parent_of = {r["id"]: r["parent_id"] for r in all_rows}
-    depth_of = {r["id"]: r["depth"] for r in all_rows}
-
+    # Only the biggest few can win, and each one rules out its own subtree, so
+    # reading limit * a small factor is always enough. Reading every directory
+    # row on the drive to return six was the wasteful part.
     candidates = conn.execute(
         """
         SELECT * FROM nodes
         WHERE drive_id = ? AND is_dir = 1 AND depth >= ?
         ORDER BY size_bytes DESC, depth ASC
+        LIMIT ?
         """,
-        (drive_id, min_depth),
+        (drive_id, min_depth, limit * 8),
     ).fetchall()
+    if not candidates:
+        conn.close()
+        return []
+
+    # Ancestor chains only for the rows in hand, rather than the whole drive.
+    parent_of, depth_of = {}, {}
+    wanted = {r["parent_id"] for r in candidates if r["parent_id"] is not None}
+    seen = set()
+    while wanted:
+        placeholders = ",".join("?" * len(wanted))
+        rows = conn.execute(
+            f"SELECT id, parent_id, depth FROM nodes WHERE id IN ({placeholders})",
+            list(wanted),
+        ).fetchall()
+        seen |= wanted
+        wanted = set()
+        for r in rows:
+            parent_of[r["id"]] = r["parent_id"]
+            depth_of[r["id"]] = r["depth"]
+            # Stop climbing once above title level, which is where the walk
+            # below stops looking anyway.
+            if r["parent_id"] is not None and r["depth"] > min_depth \
+                    and r["parent_id"] not in seen:
+                wanted.add(r["parent_id"])
     conn.close()
 
     selected = []
@@ -417,7 +444,7 @@ def get_largest_folders(drive_id, limit=8, min_depth=2):
         descendant_of_selected = False
         while pid is not None:
             if depth_of.get(pid, -1) < min_depth:
-                break  # walked up past title-level into category/root - stop
+                break  # walked up past title level into category or root
             if pid in selected_ids:
                 descendant_of_selected = True
                 break
@@ -625,23 +652,58 @@ def redundancy_summary(drive_id):
     rather than folders. The folder itself is often present but empty, so its
     existence alone says nothing.
     """
+    return redundancy_summaries().get(
+        drive_id, {"has_root": False, "titles": 0, "size_bytes": 0})
+
+
+def redundancy_summaries():
+    """
+    The same figures for every drive at once, in two queries.
+
+    Worth having separately because the suggestion ranking asks for this per
+    candidate, and one connection per drive per candidate is most of the work
+    in a build.
+    """
     conn = get_conn()
-    root = conn.execute(
-        "SELECT 1 FROM nodes WHERE drive_id = ? AND root_type = 'redundancy' "
-        "AND depth = 0 LIMIT 1",
-        (drive_id,),
-    ).fetchone()
-    row = conn.execute(
-        "SELECT COUNT(*) AS titles, COALESCE(SUM(size_bytes), 0) AS bytes "
-        "FROM nodes WHERE drive_id = ? AND root_type = 'redundancy' AND depth = 2",
-        (drive_id,),
-    ).fetchone()
+    roots = {r["drive_id"] for r in conn.execute(
+        "SELECT DISTINCT drive_id FROM nodes "
+        "WHERE root_type = 'redundancy' AND depth = 0")}
+    rows = conn.execute(
+        "SELECT drive_id, COUNT(*) AS titles, COALESCE(SUM(size_bytes), 0) AS bytes "
+        "FROM nodes WHERE root_type = 'redundancy' AND depth = 2 "
+        "GROUP BY drive_id").fetchall()
     conn.close()
-    return {
-        "has_root": root is not None,
-        "titles": row["titles"],
-        "size_bytes": row["bytes"],
-    }
+
+    out = {d: {"has_root": True, "titles": 0, "size_bytes": 0} for d in roots}
+    for r in rows:
+        out.setdefault(r["drive_id"], {"has_root": False})
+        out[r["drive_id"]].update(titles=r["titles"], size_bytes=r["bytes"])
+    return out
+
+
+def title_counts_by_category():
+    """
+    How many titles sit in each category, per drive, in one query.
+
+    Counted from the folder a title lives in rather than its tags, so the
+    figure matches what the tree shows even where tags have been edited.
+    Returns {drive_id: {category_name: count}}.
+    """
+    conn = get_conn()
+    rows = conn.execute(
+        """
+        SELECT child.drive_id AS drive_id, parent.name AS category, COUNT(*) AS n
+        FROM nodes child JOIN nodes parent ON child.parent_id = parent.id
+        WHERE child.depth = 2 AND child.root_type = 'library'
+        GROUP BY child.drive_id, parent.name
+        """
+    ).fetchall()
+    conn.close()
+
+    out = {}
+    for r in rows:
+        out.setdefault(r["drive_id"], {})[r["category"]] = r["n"]
+    return out
 
 
 def get_tags_for_drive(drive_id):

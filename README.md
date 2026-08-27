@@ -34,12 +34,14 @@ and again whenever you add, move or delete files.
 - **See what is backed up**: green shield for a complete copy elsewhere,
   amber for partial, purple when a title is merely split across drives.
 - **Filter and sort** drives by type, and filter titles by backup state.
+- **Count what you have**, by category, for the library, each drive and each
+  folder.
 - **Spot old folder layouts**, such as an anime with its seasons buried
   inside it, flagged with a wrench so you can tidy them up.
 - **Get suggestions** for what to move or back up, each with its reasoning.
 - **Set each drive's type**, which sets how full it is allowed to get.
-- **Back up the database** to any rclone destination.
-- **Rename or forget** a drive.
+- **Back up the database** to any rclone destination, and rename or forget a
+  drive.
 
 ## Suggestions
 

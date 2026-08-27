@@ -8,6 +8,7 @@ Renders one page from mediavault.db: every drive, its capacity, a drill-down
 tree, tags, and backup indicators.
 """
 
+import gzip
 import os
 import subprocess
 import sys
@@ -31,6 +32,29 @@ app = Flask(__name__)
 # need a restart. Costs one stat() per render, nothing beside the DB work.
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 
+# The page is mostly repeated markup, so it compresses to a fraction of its
+# size. Worth it even over loopback: the browser spends less time reading the
+# socket before it can start parsing.
+GZIP_MIN_BYTES = 4096
+
+
+@app.after_request
+def compress(response):
+    if (response.direct_passthrough
+            or response.status_code < 200 or response.status_code >= 300
+            or "Content-Encoding" in response.headers
+            or response.content_length is None
+            or response.content_length < GZIP_MIN_BYTES
+            or "gzip" not in request.headers.get("Accept-Encoding", "").lower()):
+        return response
+
+    data = gzip.compress(response.get_data(), compresslevel=6)
+    response.set_data(data)
+    response.headers["Content-Encoding"] = "gzip"
+    response.headers["Content-Length"] = str(len(data))
+    response.headers.add("Vary", "Accept-Encoding")
+    return response
+
 
 def human(n_bytes):
     """Whichever unit reads best, so 300MB shows as '312.4 MB', not '0.3 GB'."""
@@ -45,6 +69,25 @@ def human(n_bytes):
 
 # Marks a title deliberately only part backed up, so it stops nagging.
 PARTIAL_OK_TAG = "partial-ok"
+
+
+def summarise_counts(per_category):
+    """
+    {category: n} folded into the buckets shown in the UI.
+
+    Returns {'total': n, 'parts': [(label, n), ...]} with the empty buckets
+    dropped, so a drive holding only anime says so rather than listing zeros.
+    """
+    totals = {}
+    for category, n in (per_category or {}).items():
+        key, label = tagging.bucket_for_category(category)
+        entry = totals.setdefault(key, {"label": label, "n": 0})
+        entry["n"] += n
+
+    order = [key for key, _label, _m in tagging.CATEGORY_BUCKETS]
+    parts = [(totals[k]["label"], totals[k]["n"]) for k in order
+             if k in totals and totals[k]["n"]]
+    return {"total": sum(n for _label, n in parts), "parts": parts}
 
 
 def backup_state(duplicates, tags):
@@ -88,6 +131,13 @@ def annotate_tree(nodes, drive_total_bytes, drive_id, tags_by_path, dup_map, hin
             n["backup_state"] = None
             n["hints"] = []
             n["hint_detail"] = ""
+        # A category folder says how many titles it holds. The children are
+        # already loaded at this depth, so this costs no query.
+        if n["depth"] == 1 and n["is_dir"]:
+            n["title_count"] = len(n["children"])
+            n["title_word"] = tagging.bucket_for_category(n["name"])[1]
+        else:
+            n["title_count"] = None
         annotate_tree(n["children"], drive_total_bytes, drive_id, tags_by_path,
                       dup_map, hints)
 
@@ -123,6 +173,7 @@ def home():
     dup_map = db.get_duplicate_map()
     connected = scanner.get_connected_drives()
     hint_conn = db.get_conn()
+    counts_by_drive = db.title_counts_by_category()
 
     for d in drives:
         # Where this drive is right now, rather than where it was last scanned.
@@ -161,6 +212,7 @@ def home():
         annotate_tree(tree, total, d["drive_id"], tags_by_path, dup_map, hints)
         d["tree"] = tree
         d["hint_count"] = len(hints)
+        d["counts"] = summarise_counts(counts_by_drive.get(d["drive_id"]))
 
         largest = db.get_largest_folders(d["drive_id"], limit=6)
         for lf in largest:
@@ -189,10 +241,21 @@ def home():
         "hint_count": sum(d["hint_count"] for d in drives),
     }
 
+    # Every category on every drive, folded together for the header. Backup
+    # copies are counted apart, since a copy is not another title, and saying
+    # so is what explains the gap against the filter bar's row count.
+    combined = {}
+    for per_category in counts_by_drive.values():
+        for category, n in per_category.items():
+            combined[category] = combined.get(category, 0) + n
+    library = summarise_counts(combined)
+    library["backups"] = sum(s["titles"] for s in db.redundancy_summaries().values())
+
     return render_template(
         "dashboard.html",
         drives=drives,
         stats=stats,
+        library=library,
         low_space_drives=low_space_drives,
         all_tags=all_tags,
         system_tags=tagging.SYSTEM_TAGS,

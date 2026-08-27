@@ -186,12 +186,13 @@ def rank_targets(source, drives, size_needed):
     return options
 
 
-def offline_options(drives, size_needed, for_backup=False):
+def offline_options(drives, size_needed, for_backup=False, summaries=None):
     """
     Drives that would work but are not plugged in. Capacity is remembered
     from the last scan, so plugging one in is often a better answer than
     squeezing something onto whatever happens to be attached.
     """
+    summaries = summaries if summaries is not None else db.redundancy_summaries()
     out = []
     for d in drives:
         if d["connected"] or not d["total_bytes"]:
@@ -202,7 +203,7 @@ def offline_options(drives, size_needed, for_backup=False):
         if not for_backup and (d["cold_storage"] or drivetypes.is_flash(d["type"])):
             continue
 
-        held = db.redundancy_summary(d["drive_id"])["titles"]
+        held = summaries.get(d["drive_id"], {}).get("titles", 0)
         out.append({
             "drive_id": d["drive_id"],
             "label": d["label"],
@@ -219,7 +220,7 @@ def offline_options(drives, size_needed, for_backup=False):
     return out
 
 
-def redundancy_distribution(drives=None):
+def redundancy_distribution(drives=None, summaries=None):
     """
     How the backup copies are spread, and how much a single failure costs.
 
@@ -234,11 +235,12 @@ def redundancy_distribution(drives=None):
     live on any single drive, and it is what ranks targets for a backup.
     """
     drives = drives if drives is not None else describe_drives(
-        scanner.get_connected_drives(max_age=0))
+        scanner.get_connected_drives())
+    summaries = summaries if summaries is not None else db.redundancy_summaries()
 
     per_drive, total_titles, total_bytes = [], 0, 0
     for d in drives:
-        summary = db.redundancy_summary(d["drive_id"])
+        summary = summaries.get(d["drive_id"], {"titles": 0, "size_bytes": 0})
         total_titles += summary["titles"]
         total_bytes += summary["size_bytes"]
         per_drive.append({
@@ -266,7 +268,7 @@ def redundancy_distribution(drives=None):
     }
 
 
-def rank_backup_targets(source_drive_id, size_needed, drives=None):
+def rank_backup_targets(source_drive_id, size_needed, drives=None, counts=None):
     """
     Where a backup copy should go, best first.
 
@@ -280,8 +282,11 @@ def rank_backup_targets(source_drive_id, size_needed, drives=None):
     daily and refreshes itself, and it is genuinely offsite.
     """
     drives = drives if drives is not None else describe_drives(
-        scanner.get_connected_drives(max_age=0))
-    counts = {e["drive_id"]: e for e in redundancy_distribution(drives)["per_drive"]}
+        scanner.get_connected_drives())
+    # Passed in by build(), which works it out once. Recomputing it per
+    # candidate was the bulk of the time a build took.
+    if counts is None:
+        counts = {e["drive_id"]: e for e in redundancy_distribution(drives)["per_drive"]}
 
     options = []
     for d in drives:
@@ -349,9 +354,8 @@ def rank_backup_targets(source_drive_id, size_needed, drives=None):
     return options
 
 
-def tagged_paths(drive_id, wanted):
-    """Paths on a drive carrying one tag."""
-    tags_by_path = db.get_tags_for_drive(drive_id)
+def paths_with_tag(tags_by_path, wanted):
+    """Paths carrying one tag, from a drive's tag map."""
     return {rel_path for rel_path, tags in tags_by_path.items()
             if tagging.has_tag(tags, wanted)}
 
@@ -371,7 +375,7 @@ def is_protected(copies, by_id):
     return False
 
 
-def protect_groups(drives, by_id, backed_up, notes):
+def protect_groups(drives, by_id, backed_up, notes, counts, summaries):
     """
     Starred titles with no copy anywhere that counts.
 
@@ -385,11 +389,12 @@ def protect_groups(drives, by_id, backed_up, notes):
     for source in drives:
         if not source["connected"]:
             continue
-        starred = tagged_paths(source["drive_id"], tagging.STAR_TAG)
+        tags_here = db.get_tags_for_drive(source["drive_id"])
+        starred = paths_with_tag(tags_here, tagging.STAR_TAG)
         if not starred:
             continue
         tagged_anywhere += len(starred)
-        watching = tagged_paths(source["drive_id"], tagging.WATCHING_TAG)
+        watching = paths_with_tag(tags_here, tagging.WATCHING_TAG)
 
         candidates = []
         for title in title_rows(source["drive_id"]):
@@ -399,7 +404,8 @@ def protect_groups(drives, by_id, backed_up, notes):
             if is_protected(copies, by_id):
                 continue
 
-            targets = rank_backup_targets(source["drive_id"], title["size_bytes"] or 0, drives)
+            targets = rank_backup_targets(source["drive_id"], title["size_bytes"] or 0,
+                                          drives, counts)
             if not targets:
                 continue
 
@@ -423,7 +429,8 @@ def protect_groups(drives, by_id, backed_up, notes):
                 "why": why,
                 "targets": targets,
                 "offline_targets": offline_options(drives, title["size_bytes"] or 0,
-                                                   for_backup=True),
+                                                   for_backup=True,
+                                                   summaries=summaries),
                 "suggested_target": targets[0]["drive_id"],
             })
 
@@ -461,10 +468,16 @@ def build(include_recent=False, recent_days=RECENT_DAYS):
     is one source drive with a reason and its candidate titles, each carrying
     its own ranked list of destinations.
     """
-    connected = scanner.get_connected_drives(max_age=0)
+    connected = scanner.get_connected_drives()
     drives = describe_drives(connected)
     by_id = {d["drive_id"]: d for d in drives}
     backed_up = db.get_duplicate_map()
+
+    # Worked out once and threaded through. Both are the same for every
+    # candidate, and asking per candidate was most of the cost of a build.
+    summaries = db.redundancy_summaries()
+    spread = redundancy_distribution(drives, summaries)
+    counts = {e["drive_id"]: e for e in spread["per_drive"]}
 
     groups = []
     skipped_recent = 0
@@ -496,8 +509,9 @@ def build(include_recent=False, recent_days=RECENT_DAYS):
         if not titles:
             continue
 
-        watching = tagged_paths(source["drive_id"], tagging.WATCHING_TAG)
-        starred = tagged_paths(source["drive_id"], tagging.STAR_TAG)
+        tags_here = db.get_tags_for_drive(source["drive_id"])
+        watching = paths_with_tag(tags_here, tagging.WATCHING_TAG)
+        starred = paths_with_tag(tags_here, tagging.STAR_TAG)
 
         candidates, freed = [], 0
         for title in titles:
@@ -543,7 +557,8 @@ def build(include_recent=False, recent_days=RECENT_DAYS):
                 "watching": False,
                 "why": why,
                 "targets": targets,
-                "offline_targets": offline_options(drives, title["size_bytes"] or 0),
+                "offline_targets": offline_options(drives, title["size_bytes"] or 0,
+                                                   summaries=summaries),
                 "suggested_target": targets[0]["drive_id"],
             })
             freed += title["size_bytes"] or 0
@@ -555,7 +570,7 @@ def build(include_recent=False, recent_days=RECENT_DAYS):
 
         if not candidates:
             if deficit > 0:
-                waiting = offline_options(drives, deficit)
+                waiting = offline_options(drives, deficit, summaries=summaries)
                 if waiting:
                     names = ", ".join(f"{w['label']} ({w['free_h']} free)" for w in waiting[:3])
                     notes.append(f"{source['label']} needs {deficit / 2**30:.1f} GB moved off "
@@ -580,11 +595,10 @@ def build(include_recent=False, recent_days=RECENT_DAYS):
         })
 
     # Relief first: those drives have an actual problem.
-    groups.extend(protect_groups(drives, by_id, backed_up, notes))
+    groups.extend(protect_groups(drives, by_id, backed_up, notes, counts, summaries))
     groups.sort(key=lambda g: ({"relief": 0, "protect": 1, "reclaim": 2}[g["reason"]],
                                -g["would_free"]))
 
-    spread = redundancy_distribution(drives)
     if spread["total_titles"] and spread["worst_case_pct"] >= CONCENTRATION_WARN_PCT:
         notes.append(
             f"{spread['worst_case']['label']} holds {spread['worst_case_pct']}% of "
