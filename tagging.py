@@ -1,11 +1,10 @@
 """
-tagging.py - Smart default tags based on category folder name.
-
+tagging.py - default tags from a category folder name, plus the two tags the
+suggestion engine acts on.
 """
 
 
-# Tags the system understands and acts on, as opposed to the free text ones
-# you invent. Neither is ever applied automatically: they only mean anything
+# Neither system tag is ever applied automatically. They only mean anything
 # because you put them there.
 STAR_TAG = "star"
 WATCHING_TAG = "watching"
@@ -35,10 +34,7 @@ def has_tag(tags, wanted):
 
 
 def default_tags_for_category(category_name):
-    """
-    category_name is the immediate parent folder of a title, e.g. "00_Anime",
-    "01_Movies", "02_TV Shows", "03_Anime Movies".
-    """
+    """category_name is a title's parent folder, e.g. "00_Anime" or "Movies"."""
     name = category_name.lower()
     is_anime = "anime" in name
     is_movie = "movie" in name or "film" in name

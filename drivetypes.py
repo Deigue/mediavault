@@ -1,28 +1,19 @@
 """
 drivetypes.py - what kind of drive is this, and how full should it get?
 
-The sensible fill level differs by type, and for mechanical disks it also
-depends on what the drive is for.
+Each type keeps a different amount free, for a different reason:
 
-SSDs slow down as they fill, mildly from about 85 percent and sharply past
-95, because the controller uses whatever space is unallocated as room to
-shuffle blocks around. Modern controllers do that with any free space on the
-drive, so setting aside a fixed reserve is no longer the practice it once
-was; simply not running near full is what matters. Only writes wear the
-cells, reads cost nothing.
+    SSD    15%  they slow down sharply when nearly full
+    HDD    10%  no wear, but a large file needs contiguous room to land
+    USB    15%  cheap flash, no TRIM, so writes get worse as it fills
+    SDC    15%  same as USB. A card is a card whatever the slot
+    Phone  10%  the phone itself suffers first when it runs out
 
-Mechanical disks do not wear from being full at all, and this library is
-made of large files read start to finish. Fragmentation costs one seek per
-extent, so a 4 GB film split across ten extents loses about a tenth of a
-second on a read lasting forty. The familiar "keep 15 to 20 percent free"
-advice is aimed at general purpose drives full of small files, not at this.
-
-What does still matter on a full mechanical disk is writing: the space left
-is on the slower inner tracks and scattered, so a new file needs somewhere
-contiguous to land. That argues for keeping room for the largest file you
-would write, not for a defragmentation figure. So a working disk keeps 10
-percent, and one marked as cold storage, read from but not written to, is
-allowed to fill to 97.
+Cold storage relaxes that to 3%, but only where it is safe. Cards and sticks
+have no stated retention unpowered and fail all at once rather than
+gradually, so "fill it and leave it in a drawer" is exactly what ruins them
+and the option is refused. A phone is powered daily and refreshes itself, so
+it counts as ordinary storage throughout.
 """
 
 import re
@@ -30,14 +21,21 @@ import re
 SSD = "ssd"
 HDD = "hdd"
 USB = "usb"
+SDC = "sdc"
+PHONE = "phone"
 UNKNOWN = "unknown"
 
-# A drive marked as cold storage is read from and not written to, so it can
-# be filled almost completely. The remainder is for the filesystem, not for
-# performance.
+# What is left on a cold storage drive is for the filesystem, not performance.
 COLD_STORAGE_FREE_PCT = 3
 
-# How much free space each type should keep, and why.
+# Removable flash. A card and a stick share every rule here.
+FLASH_TYPES = (USB, SDC)
+
+# Every type that can be stored against a drive. UNKNOWN is only ever a
+# fallback, never a choice.
+ALL_TYPES = (SSD, HDD, USB, SDC, PHONE)
+
+# warn_free_pct is the threshold; reason is shown when a drive is under it.
 SPACE_RULES = {
     SSD: {
         "warn_free_pct": 15,
@@ -52,9 +50,24 @@ SPACE_RULES = {
                   "mark it as cold storage if you only read from it.",
     },
     USB: {
-        "warn_free_pct": 10,
+        "warn_free_pct": 15,
         "label": "USB",
-        "reason": "Removable drives are usually a staging area rather than a home.",
+        "reason": "Flash behind a cheap controller with no TRIM, so the fuller it "
+                  "gets the harder each write is on it. Keep it as an extra copy "
+                  "rather than the only one.",
+    },
+    SDC: {
+        "warn_free_pct": 15,
+        "label": "SD Card",
+        "reason": "Flash behind a cheap controller with no TRIM, so the fuller it "
+                  "gets the harder each write is on it. Cards also fail all at "
+                  "once rather than gradually, so never keep the only copy here.",
+    },
+    PHONE: {
+        "warn_free_pct": 10,
+        "label": "Phone",
+        "reason": "A phone needs working room, and it is the device itself that "
+                  "suffers first when it runs out.",
     },
     UNKNOWN: {
         "warn_free_pct": 15,
@@ -64,9 +77,13 @@ SPACE_RULES = {
     },
 }
 
-# Matches a type at the start of a volume label, e.g. "SSD-500GB-01",
-# "HDD-4TB-02", "USB-32GB-03". The separator is optional so "SSD1" works too.
-LABEL_PATTERN = re.compile(r"^\s*(ssd|hdd|usb|nvme|flash|thumb)\b[-_ ]?", re.IGNORECASE)
+# Reads the type off a volume label like "SSD-500GB-01" or "PHO-256GB-01".
+# The separator is optional so "SSD1" works. Longer names come first so "SSD"
+# is never read as an "SD" card.
+LABEL_PATTERN = re.compile(
+    r"^\s*(ssd|nvme|hdd|microsd|sdcard|sdc|sd|usb|flash|thumb|phone|pho)\b[-_ ]?",
+    re.IGNORECASE,
+)
 
 LABEL_ALIASES = {
     "ssd": SSD,
@@ -75,6 +92,21 @@ LABEL_ALIASES = {
     "usb": USB,
     "flash": USB,
     "thumb": USB,
+    "sdc": SDC,
+    "sd": SDC,
+    "microsd": SDC,
+    "sdcard": SDC,
+    "phone": PHONE,
+    "pho": PHONE,
+}
+
+# Bus types from scanner.get_bus_type() that name the medium on their own. A
+# card in a USB reader reports USB, not SD, which costs nothing since the two
+# share every rule.
+BUS_TYPES = {
+    "SD": SDC,
+    "MMC": SDC,
+    "NVMe": SSD,
 }
 
 
@@ -88,20 +120,19 @@ def from_label(label):
     return LABEL_ALIASES.get(match.group(1).lower())
 
 
-def detect(label=None, removable=False, stored=None):
+def detect(label=None, removable=False, stored=None, bus_type=None):
     """
-    Decide a drive's type.
-
-    stored wins, because it was set by hand. Otherwise the volume label is
-    read, since the naming convention here already carries it. Failing that a
-    removable volume is treated as USB. Anything else is unknown, which uses
-    the cautious threshold rather than guessing.
+    A drive's type, in order of trust: set by hand, volume label, bus, then
+    removable means a stick. Unknown uses the cautious threshold.
     """
-    if stored in (SSD, HDD, USB):
+    if stored in ALL_TYPES:
         return stored
     from_name = from_label(label)
     if from_name:
         return from_name
+    from_bus = BUS_TYPES.get(bus_type)
+    if from_bus:
+        return from_bus
     if removable:
         return USB
     return UNKNOWN
@@ -111,22 +142,31 @@ def rule_for(drive_type):
     return SPACE_RULES.get(drive_type, SPACE_RULES[UNKNOWN])
 
 
+def is_flash(drive_type):
+    """A card or a stick. Not a phone, which is a better tier."""
+    return drive_type in FLASH_TYPES
+
+
+def allows_cold_storage(drive_type):
+    """Refused for cards and sticks: unpowered flash has no stated retention,
+    so filling one and leaving it in a drawer is what loses the data."""
+    return not is_flash(drive_type)
+
+
 def evaluate(drive_type, free_bytes, total_bytes, cold_storage=False):
     """
-    Should this drive be flagged, and what should it say?
-
-    Returns a dict with free_pct, threshold_pct, low (bool), severity
-    ('ok', 'warn', 'critical') and a message. A cold storage drive is never
-    flagged: it is full on purpose.
+    Should this drive be flagged? Returns free_pct, threshold_pct, low,
+    severity ('ok', 'warn', 'critical', 'cold') and a message.
     """
     total = total_bytes or 0
     free_pct = (100.0 * (free_bytes or 0) / total) if total else 0.0
     rule = rule_for(drive_type)
     threshold = rule["warn_free_pct"]
 
-    if cold_storage:
-        # Read-only archive, so nearly all of it is usable. The small reserve
-        # left is for the filesystem itself, not for performance.
+    # A cold storage flag left on a card is ignored, not obeyed. It could only
+    # have been set before the type was known, and honouring it would mute the
+    # warning on the drive that most needs it.
+    if cold_storage and allows_cold_storage(drive_type):
         threshold = COLD_STORAGE_FREE_PCT
         low = free_pct < threshold
         return {

@@ -1,10 +1,8 @@
 """
-db.py - SQLite storage layer for MediaVault.
+db.py - SQLite storage layer.
 
-One file (mediavault.db) that lives on your main PC and holds everything.
-Each drive scan replaces that drive's previous snapshot, so the data always
-reflects the last time each drive was scanned.
-
+One file, mediavault.db. Each scan replaces that drive's previous snapshot,
+so the data always reflects the last time the drive was scanned.
 """
 
 import sqlite3
@@ -47,10 +45,9 @@ CREATE INDEX IF NOT EXISTS idx_nodes_name ON nodes(name);
 -- Serves the shallow (depth <= 2) page render and the depth-2 duplicate scan.
 CREATE INDEX IF NOT EXISTS idx_nodes_drive_depth ON nodes(drive_id, depth);
 
--- Tags are keyed by (drive_id, rel_path) rather than node id, because nodes
--- are wiped and re-inserted on every rescan (their autoincrement ids are not
--- stable) - but the same title's rel_path on the same drive usually is, so
--- tags survive rescans as long as you don't rename/move the title folder.
+-- Keyed by (drive_id, rel_path), not node id: nodes are wiped and reinserted
+-- on every rescan so their ids are not stable, but paths are. Tags survive a
+-- rescan unless the title folder is renamed or moved.
 CREATE TABLE IF NOT EXISTS tags (
     drive_id  TEXT NOT NULL,
     rel_path  TEXT NOT NULL,
@@ -64,38 +61,32 @@ def get_conn():
     conn = sqlite3.connect(DB_PATH, timeout=15)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    # WAL lets the dashboard keep reading while a scan writes, instead of
-    # both sides tripping over "database is locked". busy_timeout gives a
-    # blocked writer 10s to wait its turn rather than failing instantly.
+    # WAL lets the dashboard read while a scan writes; busy_timeout gives a
+    # blocked writer time to wait its turn rather than failing instantly.
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 10000")
     conn.execute("PRAGMA synchronous = NORMAL")
     return conn
 
 
-# Columns added to `nodes` after the first release. Timestamps tell recently
-# arrived content from settled content, which is what stops the suggestion
-# engine proposing a move of something still being watched.
-#
-# For a folder, modified_at is the newest file anywhere inside it: "when did
-# the last episode arrive", which the folder's own timestamp never reflects.
+# Columns added after the first release, since SQLite has no ADD COLUMN IF
+# NOT EXISTS. For a folder, modified_at is the newest file anywhere inside,
+# which is what tells a show still receiving episodes from a settled one.
 ADDED_NODE_COLUMNS = {
     "created_at": "REAL",    # unix time, when it first appeared on the drive
     "modified_at": "REAL",   # unix time, newest content anywhere inside it
 }
 
-# Columns added to `drives` after the first release. These record how a drive
-# was last scanned, so a rescan started from the dashboard repeats those
-# options instead of quietly falling back to the defaults.
 ADDED_DRIVE_COLUMNS = {
+    # How this drive was last scanned, so a rescan repeats those options
+    # rather than falling back to the defaults.
     "root_prefix": "TEXT",
     "redundancy_prefix": "TEXT",
     "redundancy_include": "TEXT",
-    # 'ssd', 'hdd', 'usb' or NULL. NULL means work it out from the volume
-    # label each time; a value here is a choice made by hand and always wins.
+    # A drivetypes value, or NULL to read it off the volume label each time.
+    # A value here was set by hand and always wins.
     "drive_type": "TEXT",
-    # 1 = deliberately filled up and treated as read-only archive, so the
-    # low space warning is not useful and is suppressed.
+    # Filled on purpose and read only, so the low space warning is suppressed.
     "cold_storage": "INTEGER NOT NULL DEFAULT 0",
 }
 
@@ -127,13 +118,8 @@ def now_iso():
 
 def upsert_drive(drive_id, label, total_bytes, used_bytes, free_bytes, last_seen_path,
                  scan_options=None):
-    """
-    Record a drive's capacity and label after a scan.
-
-    scan_options: optional dict with root_prefix, redundancy_prefix and
-    redundancy_include, remembered so a later rescan can repeat them. Pass
-    None to leave whatever is already stored untouched.
-    """
+    """Record a drive's capacity and label after a scan. scan_options is
+    remembered for later rescans; None leaves what is stored alone."""
     opts = scan_options or {}
     conn = get_conn()
     conn.execute(
@@ -169,12 +155,8 @@ def get_drive(drive_id):
 
 def replace_nodes(drive_id, node_list):
     """
-    node_list: list of dicts with keys: tmp_id, parent_tmp_id, name, rel_path,
-    is_dir, size_bytes, depth, root_type - built by scanner.py in
-    parent-before-child order.
-    Wipes this drive's previous tree and inserts the new one, remapping
-    tmp_id -> real autoincrement id as it goes so parent_id links are correct.
-    Tags (kept in a separate table, keyed by rel_path) are left untouched.
+    Replace this drive's whole tree, remapping scanner.py's tmp_id links to
+    real row ids as it goes. Tags live in their own table and are untouched.
     """
     conn = get_conn()
     conn.execute("DELETE FROM nodes WHERE drive_id = ?", (drive_id,))
@@ -232,17 +214,13 @@ def _nest(rows):
 
 def get_tree_for_drive(drive_id, max_depth=2):
     """
-    Returns the top of the drive's tree - roots, categories, and titles -
-    each with nested 'children', stopping at max_depth.
+    Roots, categories and titles, nested, stopping at max_depth.
 
-    Depths 0-2 are where everything interactive lives (tags, duplicate
-    badges, tag filtering), and they're a tiny slice of the tree; the bulk
-    of the nodes are seasons and individual files below that. Those are
-    fetched on demand by get_children() when the user expands a folder, so
-    the initial page stays small no matter how many files are indexed.
-
-    Each returned node carries 'has_children' so the UI knows whether to
-    render an expand arrow for a folder it hasn't loaded yet.
+    Depths 0-2 hold everything interactive and are a tiny slice of the tree.
+    Seasons and files below that are fetched by get_children() on expand, so
+    the initial page stays small however many files are indexed. Each node
+    carries 'has_children' so the UI can draw an arrow for what it has not
+    loaded.
     """
     conn = get_conn()
     rows = conn.execute(
@@ -252,9 +230,8 @@ def get_tree_for_drive(drive_id, max_depth=2):
 
     roots, by_id = _nest(rows)
 
-    # Nodes at the cutoff depth have no children in this result set, so ask
-    # the DB directly whether they have any deeper - otherwise a title with
-    # seasons inside would render as a leaf and never offer to expand.
+    # Nodes at the cutoff have no children in this result set, so ask
+    # directly, or a title with seasons inside would render as a leaf.
     edge_ids = [d["id"] for d in by_id.values() if d["depth"] == max_depth and d["is_dir"]]
     if edge_ids:
         placeholders = ",".join("?" * len(edge_ids))
@@ -270,12 +247,8 @@ def get_tree_for_drive(drive_id, max_depth=2):
 
 
 def get_children(parent_id):
-    """
-    One level of children for a folder, for lazy expansion in the dashboard.
-
-    Returns flat dicts (no nesting) each carrying 'has_children', so the UI
-    can render an expand arrow for grandchildren it hasn't fetched yet.
-    """
+    """One level of children, flat, each carrying 'has_children' so the UI can
+    draw an arrow for grandchildren it has not fetched."""
     conn = get_conn()
     rows = conn.execute(
         f"SELECT * FROM nodes WHERE parent_id = ? {NODE_ORDER}", (parent_id,)
@@ -322,14 +295,9 @@ def update_drive_usage(drive_id, total_bytes, used_bytes, free_bytes):
 
 def delete_node_subtree(node_id):
     """
-    Remove a node, everything beneath it, and their tags, then subtract the
-    freed size from every ancestor.
-
-    This keeps the tree usable after a delete without waiting for a rescan.
-    Folder sizes are stored as recursive totals, so an ancestor that is not
-    corrected would keep counting bytes that no longer exist.
-
-    Returns {'nodes': n, 'tags': n, 'size_bytes': n}.
+    Remove a node, its subtree and their tags, then subtract the freed size
+    from every ancestor. Folder sizes are recursive totals, so an ancestor
+    left alone would keep counting bytes that no longer exist.
     """
     conn = get_conn()
     try:
@@ -385,11 +353,8 @@ def get_drive_id_for_node(node_id):
 
 
 def locate_node(node_id):
-    """
-    Everything the UI needs to expand the tree down to a node: its drive, its
-    path, and its ancestors outermost first. Used when jumping to the other
-    copy of a title from the backup badge.
-    """
+    """Everything needed to expand the tree down to a node: its drive, path,
+    and ancestors outermost first."""
     conn = get_conn()
     row = conn.execute("SELECT * FROM nodes WHERE id = ?", (node_id,)).fetchone()
     if row is None:
@@ -420,20 +385,14 @@ def locate_node(node_id):
 
 def get_largest_folders(drive_id, limit=8, min_depth=2):
     """
-    'What's eating my space' list, restricted to title-level folders.
+    What is eating this drive's space, at title level or below.
 
-    depth 0 = the library root itself (e.g. "Videos")
-    depth 1 = category folders ("01_Anime")
-    depth 2 = titles ("Sword Mart Offline")
-
-    A title is only shown once even if it has large subfolders (seasons,
-    release-named folders, etc.) - if a folder is already selected, none
-    of its descendants are also listed, since deleting the title deletes
-    them anyway.
+    A title is listed once: once a folder is selected none of its descendants
+    are, since deleting the title deletes them anyway.
     """
     conn = get_conn()
 
-    # Full parent/depth map for the drive, used to walk ancestor chains.
+    # Parent and depth maps, so ancestor chains cost no extra queries.
     all_rows = conn.execute(
         "SELECT id, parent_id, depth FROM nodes WHERE drive_id = ? AND is_dir = 1", (drive_id,)
     ).fetchall()
@@ -475,11 +434,9 @@ def get_largest_folders(drive_id, limit=8, min_depth=2):
 
 def search_nodes(query, limit=200):
     """
-    Search folder/file names across every drive.
-
-    Each result carries what the dashboard's result row needs to stand on its
-    own - owning drive, full relative path, size, any tags - plus the chain of
-    ancestor ids, so clicking a result can expand the tree straight to it.
+    Search names across every drive. Each result carries enough to stand on
+    its own in the result list, plus its ancestor ids so clicking it can
+    expand the tree straight there.
     """
     conn = get_conn()
     rows = conn.execute(
@@ -497,7 +454,7 @@ def search_nodes(query, limit=200):
         conn.close()
         return results
 
-    # Ancestor chains, resolved from one parent map rather than a query per row.
+    # One parent map for the lot, rather than a query per row.
     drive_ids = {r["drive_id"] for r in results}
     placeholders = ",".join("?" * len(drive_ids))
     parent_of = {
@@ -518,18 +475,14 @@ def search_nodes(query, limit=200):
         while pid is not None:
             chain.append(pid)
             pid = parent_of.get(pid)
-        r["ancestors"] = list(reversed(chain))  # outermost first, for sequential expansion
+        r["ancestors"] = list(reversed(chain))  # outermost first, to expand in order
         r["tags"] = tags_by_drive.get((r["drive_id"], r["rel_path"]), [])
     return results
 
 
 def set_tag_bulk(items, tag, action):
-    """
-    Apply or remove one tag across many titles in a single transaction.
-
-    items: iterable of (drive_id, rel_path). Returns the number of titles
-    affected. Used by the dashboard's multi-select tagging.
-    """
+    """Apply or remove one tag across many titles in one transaction. items is
+    an iterable of (drive_id, rel_path). Returns how many were touched."""
     tag = (tag or "").strip()
     pairs = [(d, p) for d, p in items if d and p]
     if not tag or not pairs:
@@ -567,15 +520,11 @@ def clear_tags_for_drive(drive_id):
 
 def get_duplicate_map():
     """
-    Finds titles (depth-2 folders) that appear in more than one physical
-    location - whether that's a Videos library + a 99_Redundancy backup, two
-    separate library drives, or anything else with a matching name.
+    Titles that appear in more than one place, by matching name at depth 2.
+    Returns {node_id: [other copies]}.
 
-    Returns: {node_id: [ {drive_label, rel_path, root_type}, ... other copies ]}
-
-    Worked out fresh from the nodes table on every call. Nodes are fully
-    replaced on each scan, so deleting a duplicate from one drive removes it
-    from this map on the next scan without any cleanup step.
+    Worked out fresh each call rather than stored, so a deleted copy drops
+    out on the next scan with no cleanup step.
     """
     conn = get_conn()
     rows = conn.execute(
@@ -593,8 +542,8 @@ def get_duplicate_map():
         key = r["name"].strip().lower()
         groups.setdefault(key, []).append(dict(r))
 
-    # Direct child names for every title that has a twin, so a partial copy
-    # can be described as "3 of 30 seasons" rather than a size percentage.
+    # Child names for titles with a twin, so a partial copy reads as
+    # "3 of 30 items" rather than a size percentage.
     candidate_ids = [i["id"] for items in groups.values() if len(items) > 1 for i in items]
     children_of = {i: set() for i in candidate_ids}
     if candidate_ids:
@@ -637,19 +586,13 @@ FULL_COPY_SIZE_RATIO = 0.98
 
 def compare_copies(item, other, children_of):
     """
-    How does `other` relate to `item`? Returns relation, complete, detail.
+    How does `other` relate to `item`? Compares child names, falling back to
+    size for single-file titles.
 
-    Compares direct children by name, which for a TV show means seasons, and
-    falls back to size for titles that are a single file. Three outcomes:
-
-      full    other contains everything this copy has, so this is backed up
-      partial some of it is there, usually a deliberate choice to back up
-              only the parts worth keeping
-      split   nothing is shared. The two are not copies at all, they are
-              different parts of the same title living on different drives
-              (seasons 1-30 here, 31-33 there). Neither is redundant, and
-              deleting either loses something, so this must not be shown as
-              protection.
+      full     other has everything this copy has
+      partial  some of it, usually a deliberate choice
+      split    nothing shared. Not copies at all but different parts of one
+               title, so deleting either loses something. Never protection.
     """
     mine = children_of.get(item["id"], set())
     theirs = children_of.get(other["id"], set())
@@ -678,14 +621,9 @@ def compare_copies(item, other, children_of):
 
 def redundancy_summary(drive_id):
     """
-    What is actually in this drive's redundancy folder.
-
-    'Has a redundancy folder' on its own is not useful, because the folder is
-    often there with empty category folders inside. What matters is whether
-    real backups are sitting in it, so this counts titles rather than
-    folders.
-
-    Returns {'has_root': bool, 'titles': int, 'size_bytes': int}.
+    What is actually in this drive's redundancy folder, counted in titles
+    rather than folders. The folder itself is often present but empty, so its
+    existence alone says nothing.
     """
     conn = get_conn()
     root = conn.execute(
@@ -739,8 +677,8 @@ def remove_tag(drive_id, rel_path, tag):
 
 
 def ensure_default_tags(drive_id, rel_path, default_tags):
-    """Only seeds default tags (see tagging.py) if this title has no tags at
-    all yet, so it never overwrites tags you've set or removed by hand."""
+    """Seeds defaults only where a title has no tags at all, so hand-set and
+    hand-removed tags are never overwritten."""
     if not default_tags:
         return
     seed_default_tags_bulk(drive_id, [(rel_path, default_tags)])
@@ -748,14 +686,8 @@ def ensure_default_tags(drive_id, rel_path, default_tags):
 
 def seed_default_tags_bulk(drive_id, path_tag_pairs):
     """
-    Bulk version of ensure_default_tags for scan time.
-
-    path_tag_pairs: iterable of (rel_path, [tag, ...]).
-
-    Same rule as ensure_default_tags - a title that already has any tag is
-    left completely alone - but the whole drive is done over one connection
-    and one transaction. Doing it per title meant opening and committing a
-    fresh SQLite connection for every title on the drive.
+    Bulk ensure_default_tags for scan time, over one connection rather than
+    one per title. path_tag_pairs is an iterable of (rel_path, [tag, ...]).
     """
     pairs = [(p, t) for p, t in path_tag_pairs if t]
     if not pairs:
@@ -787,10 +719,8 @@ def get_all_distinct_tags():
 
 
 def set_drive_type(drive_id, drive_type):
-    """
-    Record how a drive should be treated. None goes back to working it out
-    from the volume label.
-    """
+    """Record how a drive should be treated. None goes back to reading it off
+    the volume label."""
     conn = get_conn()
     conn.execute("UPDATE drives SET drive_type = ? WHERE drive_id = ?", (drive_type, drive_id))
     conn.commit()
@@ -816,14 +746,11 @@ def set_drive_label(drive_id, label):
 
 def delete_drive(drive_id):
     """
-    Forget a drive completely: its capacity row, its indexed tree, and its
-    tags.
+    Forget a drive completely: capacity row, indexed tree and tags.
 
-    Tags go too. They are keyed by (drive_id, rel_path), so keeping them
-    would leave rows pointing at a drive that no longer exists, and those
-    build up every time a drive is forgotten. This does not affect tags
-    surviving a rescan, which is a separate thing: a rescan calls
-    replace_nodes, which only replaces the tree and leaves tags alone.
+    Tags go too, or rows pointing at a drive that no longer exists would
+    build up. Surviving a rescan is separate: that calls replace_nodes, which
+    only touches the tree.
     """
     conn = get_conn()
     conn.execute("DELETE FROM nodes  WHERE drive_id = ?", (drive_id,))

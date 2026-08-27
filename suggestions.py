@@ -1,37 +1,26 @@
 """
-suggestions.py - works out what is worth moving, and where.
+suggestions.py - what is worth moving or backing up, and where.
 
-Two things drive a suggestion:
+Three kinds, all only ever proposals:
 
-    relief    a drive is past the free space it should keep, so enough has to
-              come off to get it back under
-    reclaim   an SSD is holding bulk media. SSDs are the landing spot for
-              downloads and anything that wants to be fast, so their space
-              has standing value even when the drive is not in trouble
+    relief    a drive is past the free space it should keep
+    protect   a starred title exists in only one place
+    reclaim   an SSD is holding bulk media, and its space has standing value
 
-Both are only ever proposals. Nothing moves until it is ticked and confirmed.
+Moves rank destinations by what a write costs. A mechanical disk does not
+meaningfully wear from writes, so it comes first; an SSD is offered only when
+nothing else has room. Cards and USB sticks are never offered, since a move
+deletes the source and unpowered flash has no stated retention. A phone is
+ordinary storage here: real controller, powered daily.
 
-The principles behind the ranking, in order:
+Backups rank the opposite way. Most room is not the goal, spreading is, so a
+drive already holding few backups comes first and one failure cannot take out
+most of the protection. Cards and sticks are an extra layer only and never
+count as the copy that makes a starred title safe.
 
-Writes are the expensive operation. Reads cost an SSD nothing, and a
-mechanical disk does not wear from writes in any way worth counting, so
-moving from SSD to HDD is the cheapest direction there is. The reverse
-spends SSD endurance to store films that never needed the speed, so it is
-never suggested.
-
-Freeing N bytes costs N bytes written whatever is chosen, so the only way to
-spend less is to move less. Suggestions stop as soon as the drive is back
-under its threshold.
-
-Two tags decide what is off limits and what is worth protecting. A title
-tagged as being watched is never moved, whatever its age, because a move
-deletes the source once the copy lands and doing that to something an open
-player is holding breaks playback. A starred title is one worth protecting,
-and starred titles with no copy anywhere are what the backup suggestions
-offer. Neither tag is ever applied automatically.
-
-Recently arrived titles are also left alone, as a fallback for anything not
-yet tagged.
+Two tags override everything. Watching is never moved, because a move deletes
+the source and doing that to something a player has open breaks playback.
+Star marks what the backup suggestions offer. Neither is ever applied for you.
 """
 
 import time
@@ -96,7 +85,10 @@ def describe_drives(connected):
     out = []
     for d in db.get_all_drives():
         mount = connected.get(d["drive_id"])
-        drive_type = drivetypes.detect(label=d["label"], stored=d.get("drive_type"))
+        drive_type = drivetypes.detect(
+            label=d["label"], stored=d.get("drive_type"),
+            bus_type=scanner.get_bus_type(mount) if mount else None,
+        )
         cold = bool(d.get("cold_storage"))
         space = drivetypes.evaluate(drive_type, d["free_bytes"], d["total_bytes"], cold)
         out.append({
@@ -131,11 +123,10 @@ def rank_targets(source, drives, size_needed):
     """
     Where a title should go, best first.
 
-    Mechanical disks come first: they do not wear from writes and this is
-    exactly what they are for. An SSD is only ever offered if there is
-    nothing else, since filling one with media is the thing this is trying to
-    undo. Anything that would breach the target's own threshold is dropped
-    rather than ranked low, because it would simply move the problem.
+    A move deletes the source, so the destination has to be somewhere the
+    only copy can safely live. That rules out cards and sticks outright.
+    Anything that would breach the target's own threshold is dropped rather
+    than ranked low, since it would only move the problem.
     """
     options = []
     for d in drives:
@@ -143,9 +134,13 @@ def rank_targets(source, drives, size_needed):
             continue
         if not d["connected"] or not d["has_library"]:
             continue
-        # A cold storage drive is declared read-only. Writing to it would
-        # contradict the reason it is marked that way.
+        # Cold storage is declared read-only, so writing to it contradicts
+        # the reason it is marked that way.
         if d["cold_storage"]:
+            continue
+        # Never the destination of a move. Unpowered flash has no stated
+        # retention and fails all at once, and a move leaves nothing behind.
+        if drivetypes.is_flash(d["type"]):
             continue
         if d["free_bytes"] - size_needed <= 0:
             continue
@@ -157,10 +152,15 @@ def rank_targets(source, drives, size_needed):
             continue
 
         if d["type"] == drivetypes.SSD:
-            rank = 3
+            rank = 4
             why = ("An SSD, so only offered because nothing else has room. "
                    "Storing media here is the thing this is trying to undo.")
-        elif d["type"] == drivetypes.USB or d["external"]:
+        elif d["type"] == drivetypes.PHONE:
+            rank = 3
+            why = ("A phone, which is proper storage: a real controller, and "
+                   "powered daily so nothing goes stale. It leaves the house "
+                   "though, so the copy goes with it.")
+        elif d["external"]:
             rank = 2
             why = ("Removable, so fine for storage but not a permanent home. "
                    "It is not there when it is unplugged.")
@@ -188,12 +188,9 @@ def rank_targets(source, drives, size_needed):
 
 def offline_options(drives, size_needed, for_backup=False):
     """
-    Drives that would work but are not plugged in.
-
-    Capacity is remembered from the last scan, so a drive that is unplugged
-    is still known to have room. Worth saying so, because "connect the
-    Toshiba" is often a better answer than squeezing something onto whatever
-    happens to be attached.
+    Drives that would work but are not plugged in. Capacity is remembered
+    from the last scan, so plugging one in is often a better answer than
+    squeezing something onto whatever happens to be attached.
     """
     out = []
     for d in drives:
@@ -201,7 +198,8 @@ def offline_options(drives, size_needed, for_backup=False):
             continue
         if d["free_bytes"] - size_needed <= 0:
             continue
-        if not for_backup and d["cold_storage"]:
+        # Same rules a connected drive would face: neither is a move target.
+        if not for_backup and (d["cold_storage"] or drivetypes.is_flash(d["type"])):
             continue
 
         held = db.redundancy_summary(d["drive_id"])["titles"]
@@ -272,13 +270,14 @@ def rank_backup_targets(source_drive_id, size_needed, drives=None):
     """
     Where a backup copy should go, best first.
 
-    The opposite of rank_targets. Most room is not the goal here; spreading
-    is. A drive already holding few backups comes first, so each new copy
-    lands where it adds least to any one drive's blast radius. A removable
-    drive is preferred where it can be, since one kept unplugged survives
-    things that take out the machine itself. The drive holding the original
-    comes last and is marked, because a copy beside the original protects
-    against deleting it by accident and nothing else.
+    The opposite of rank_targets. Most room is not the goal here, spreading
+    is, so a drive already holding few backups comes first and each new copy
+    adds least to any one drive's blast radius. Removable is preferred, since
+    a drive kept unplugged survives what takes out the machine.
+
+    A card or a stick is an extra layer only, never protection, so it ranks
+    below every real drive. A phone ranks as an ordinary drive: it is powered
+    daily and refreshes itself, and it is genuinely offsite.
     """
     drives = drives if drives is not None else describe_drives(
         scanner.get_connected_drives(max_age=0))
@@ -293,24 +292,33 @@ def rank_backup_targets(source_drive_id, size_needed, drives=None):
 
         held = counts.get(d["drive_id"], {}).get("titles", 0)
         same_drive = d["drive_id"] == source_drive_id
-
-        # Cold storage is a reasonable home for a backup: it is written once
-        # and then only read, which is exactly what a backup is.
         is_ssd = d["type"] == drivetypes.SSD
+        is_flash = drivetypes.is_flash(d["type"])
+
         if same_drive:
             why = ("Same drive as the original, so this guards against deleting "
                    "it by accident and nothing else. A drive failure takes both.")
+        elif is_flash:
+            why = (f"A {drivetypes.rule_for(d['type'])['label'].lower()}, so treat "
+                   f"this as a spare copy rather than protection. Unpowered flash "
+                   f"has no stated retention and tends to fail all at once.")
         elif held == 0:
             why = ("Holds no backups yet, so a copy here spreads the risk rather "
                    "than adding to one pile.")
         else:
             why = (f"Already holds {held} backup(s). Fine, but a drive with fewer "
                    f"would spread the risk further.")
-        if is_ssd and not same_drive:
-            why += (" An SSD though, which a backup gains nothing from and which "
-                    "has better uses for its space.")
-        if d["external"] and not same_drive:
-            why += " Removable, so it can be unplugged and kept elsewhere."
+
+        if not same_drive and not is_flash:
+            if is_ssd:
+                why += (" An SSD though, which a backup gains nothing from and "
+                        "which has better uses for its space.")
+            if d["type"] == drivetypes.PHONE:
+                why += (" A phone counts as a real copy, and it is the one drive "
+                        "that is genuinely elsewhere. Losing or resetting it "
+                        "loses the copy.")
+            elif d["external"]:
+                why += " Removable, so it can be unplugged and kept elsewhere."
 
         options.append({
             "drive_id": d["drive_id"],
@@ -321,10 +329,13 @@ def rank_backup_targets(source_drive_id, size_needed, drives=None):
             "backups_held": held,
             "free_bytes": d["free_bytes"],
             "same_drive": same_drive,
+            # The UI marks these so a spare copy never reads as protection.
+            "counts_as_protection": not is_flash,
             "why": why,
             "detail": (f"{held} backup(s) here, {d['free_bytes'] / 2**30:.0f} GB free"),
             "rank": (
                 1 if same_drive else 0,      # a copy beside the original is last
+                1 if is_flash else 0,        # a card is a spare, not protection
                 1 if is_ssd else 0,          # an SSD is not where archives belong
                 held,                        # then whoever holds fewest already
                 0 if d["external"] else 1,   # removable preferred, can go offsite
@@ -338,25 +349,31 @@ def rank_backup_targets(source_drive_id, size_needed, drives=None):
     return options
 
 
-def starred_titles(drive_id):
-    """Paths on a drive carrying the star, meaning worth protecting."""
+def tagged_paths(drive_id, wanted):
+    """Paths on a drive carrying one tag."""
     tags_by_path = db.get_tags_for_drive(drive_id)
     return {rel_path for rel_path, tags in tags_by_path.items()
-            if tagging.has_tag(tags, tagging.STAR_TAG)}
+            if tagging.has_tag(tags, wanted)}
 
 
-def watching_titles(drive_id):
-    """Paths tagged as being watched. Never proposed for a move: the source is
-    deleted once the copy lands, and doing that to something in use breaks
-    playback."""
-    tags_by_path = db.get_tags_for_drive(drive_id)
-    return {rel_path for rel_path, tags in tags_by_path.items()
-            if tagging.has_tag(tags, tagging.WATCHING_TAG)}
+def is_protected(copies, by_id):
+    """
+    Does this title have a copy somewhere that counts as protection?
+
+    A copy on a card or a stick does not. It is worth having, but it has no
+    stated retention unpowered and fails without warning, so a starred title
+    whose only other copy is there still needs somewhere better.
+    """
+    for copy in copies or []:
+        drive = by_id.get(copy["drive_id"])
+        if drive is None or not drivetypes.is_flash(drive["type"]):
+            return True
+    return False
 
 
 def protect_groups(drives, by_id, backed_up, notes):
     """
-    Titles marked as worth keeping that have no copy anywhere.
+    Starred titles with no copy anywhere that counts.
 
     Only tagged titles are proposed. Backups are made deliberately for the
     few things that matter, and guessing which those are would bury the
@@ -368,32 +385,42 @@ def protect_groups(drives, by_id, backed_up, notes):
     for source in drives:
         if not source["connected"]:
             continue
-        starred = starred_titles(source["drive_id"])
+        starred = tagged_paths(source["drive_id"], tagging.STAR_TAG)
         if not starred:
             continue
         tagged_anywhere += len(starred)
+        watching = tagged_paths(source["drive_id"], tagging.WATCHING_TAG)
 
         candidates = []
         for title in title_rows(source["drive_id"]):
             if title["rel_path"] not in starred:
                 continue
-            if backed_up.get(title["id"]):
-                continue          # already has a copy somewhere
+            copies = backed_up.get(title["id"])
+            if is_protected(copies, by_id):
+                continue
 
             targets = rank_backup_targets(source["drive_id"], title["size_bytes"] or 0, drives)
             if not targets:
                 continue
 
             size_gb = (title["size_bytes"] or 0) / 2**30
+            why = (f"Starred, but exists in only one place. {size_gb:.0f} GB, "
+                   f"and losing this drive loses it.")
+            if copies:
+                why = (f"Starred, and its only other copy is on a card or a "
+                       f"stick, which is a spare rather than protection. "
+                       f"{size_gb:.0f} GB.")
             candidates.append({
                 "node_id": title["id"],
                 "name": title["name"],
+                "drive_id": source["drive_id"],
                 "rel_path": title["rel_path"],
                 "size_bytes": title["size_bytes"] or 0,
                 "age_days": None,
                 "backed_up": False,
-                "why": (f"Starred, but exists in only one place. {size_gb:.0f} GB, "
-                        f"and losing this drive loses it."),
+                "starred": True,
+                "watching": title["rel_path"] in watching,
+                "why": why,
                 "targets": targets,
                 "offline_targets": offline_options(drives, title["size_bytes"] or 0,
                                                    for_backup=True),
@@ -469,7 +496,8 @@ def build(include_recent=False, recent_days=RECENT_DAYS):
         if not titles:
             continue
 
-        watching = watching_titles(source["drive_id"])
+        watching = tagged_paths(source["drive_id"], tagging.WATCHING_TAG)
+        starred = tagged_paths(source["drive_id"], tagging.STAR_TAG)
 
         candidates, freed = [], 0
         for title in titles:
@@ -506,10 +534,13 @@ def build(include_recent=False, recent_days=RECENT_DAYS):
             candidates.append({
                 "node_id": title["id"],
                 "name": title["name"],
+                "drive_id": source["drive_id"],
                 "rel_path": title["rel_path"],
                 "size_bytes": title["size_bytes"] or 0,
                 "age_days": round(age) if age is not None else None,
                 "backed_up": has_copy,
+                "starred": title["rel_path"] in starred,
+                "watching": False,
                 "why": why,
                 "targets": targets,
                 "offline_targets": offline_options(drives, title["size_bytes"] or 0),

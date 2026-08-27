@@ -1,24 +1,16 @@
 """
 backup.py - copy the database somewhere safe, with rclone.
 
-Backing up mediavault.db is not quite as simple as copying the file. db.py
-runs the database in WAL mode, so recent commits live in a separate
-mediavault.db-wal file until they are checkpointed. Anything that just reads
-the .db - rclone, Explorer, a copy program - therefore captures an older
-version of the data, and if a scan happens to be writing at that moment it
-can capture a torn one.
+    py backup.py                  back up to the configured target
+    py backup.py gdrive:some/path back up somewhere else, just this once
 
-So a snapshot is taken first. VACUUM INTO reads inside a transaction, folding
-in whatever is sitting in the WAL and never seeing a half-written commit, and
-writes out a single self-contained file. That file is what gets uploaded, and
-it is why the backup goes through here rather than being one rclone command.
+Not a plain file copy. The database runs in WAL mode, so recent commits sit
+in a separate -wal file and anything reading the .db directly captures stale
+or torn data. VACUUM INTO writes a self-contained snapshot inside a
+transaction, and that is what gets uploaded.
 
-The destination is any rclone path, e.g. "gdrive:Backups/PC/mediavault". What
-rclone is and how it reaches Google Drive is rclone's business, not ours -
-this only needs it to be on PATH and configured.
-
-    python backup.py                  back up to the configured target
-    python backup.py gdrive:some/path back up somewhere else, just this once
+The destination is any configured rclone path. rclone only needs to be on
+PATH.
 """
 
 import os
@@ -31,15 +23,13 @@ from datetime import datetime
 import config
 from db import DB_PATH
 
-# Snapshots are written next to the database and replaced every run. Local
-# scratch, nothing here needs to be kept or backed up itself.
+# Local scratch, replaced every run. Nothing here needs keeping.
 WORK_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".backup")
 SNAPSHOT_PATH = os.path.join(WORK_DIR, "mediavault.db")
 LOG_FILE = os.path.join(WORK_DIR, "rclone.log")
 
-# An upload of a few megabytes should never take this long. If it does,
-# something is wrong - a dead network, or rclone sitting at a prompt - and
-# the dashboard needs an answer rather than a hung request.
+# A few megabytes should never take this long. Longer means a dead network or
+# rclone sitting at a prompt, and the dashboard needs an answer either way.
 TIMEOUT_SECONDS = 180
 
 
@@ -66,13 +56,8 @@ def snapshot(dest=SNAPSHOT_PATH):
 
 
 def run(target=None):
-    """
-    Snapshot the database and upload it to target.
-
-    Returns a summary dict on success. Raises BackupError with something
-    worth reading if anything goes wrong, since both callers show the
-    message straight to the user.
-    """
+    """Snapshot the database and upload it. Raises BackupError with a message
+    both callers show straight to the user."""
     target = (target or config.load().get("backup_target") or "").strip()
     if not target:
         raise BackupError("No backup target set. Choose one in Settings.")
@@ -96,10 +81,9 @@ def run(target=None):
         result = subprocess.run(
             [
                 "rclone", "copy", SNAPSHOT_PATH, target,
-                # Whatever is being replaced is moved aside instead of
-                # discarded. Most of this database can be rebuilt by
-                # rescanning, but tags are typed by hand and cannot be, so
-                # today's upload must not be able to bury a better one.
+                # Move the previous upload aside rather than discarding it.
+                # Most of this database can be rebuilt by rescanning, but tags
+                # are typed by hand, so today must not bury a better copy.
                 "--backup-dir", f"{target.rstrip('/')}/history/{stamp}",
                 "--log-file", LOG_FILE,
                 "--log-level", "NOTICE",
@@ -112,8 +96,7 @@ def run(target=None):
         raise BackupError(f"Could not run rclone: {e}")
 
     if result.returncode != 0:
-        # rclone puts the useful part last, and the whole log would be far
-        # too much for a toast.
+        # rclone puts the useful part last, and the log is too much for a toast.
         detail = (result.stderr or "").strip().splitlines()
         tail = detail[-1] if detail else f"exit code {result.returncode}"
         raise BackupError(f"rclone failed: {tail}")

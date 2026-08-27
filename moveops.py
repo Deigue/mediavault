@@ -1,13 +1,10 @@
 """
-moveops.py - moving a title from one drive to another.
+moveops.py - moving and copying titles between drives.
 
-A move between drives is never a rename. It is a copy, then a check that the
-copy really arrived, and only then a delete of the original. If anything goes
-wrong the source is left exactly where it was, so the worst outcome is a
-half-written folder on the target that can be deleted and retried.
-
-The copy itself is done by whichever tool is configured (robocopy, TeraCopy,
-or a plain Python copy).
+A move is never a rename: copy, verify the copy arrived, then delete the
+original. If anything fails the source is left where it was, so the worst
+outcome is a half-written folder on the target that can be deleted and
+retried. The copy itself is done by whichever tool config.py resolves to.
 """
 
 import os
@@ -29,11 +26,9 @@ class MoveError(Exception):
     """Something went wrong that the user should be told about."""
 
 
-def category_for(node, conn_nodes=None):
-    """
-    The category folder a title sits in, e.g. "Anime". Titles are at depth 2,
-    so this is the name of their parent.
-    """
+def category_for(node):
+    """The category a title sits in, e.g. "Anime". Titles are at depth 2, so
+    this is their parent's name."""
     if node["parent_id"] is None:
         return None
     parent = db.get_node(node["parent_id"])
@@ -42,11 +37,9 @@ def category_for(node, conn_nodes=None):
 
 def plan_move(node_id, target_drive_id):
     """
-    Work out where a title would go, without moving anything.
-
-    Returns a dict describing the move, or raises MoveError explaining why it
-    cannot be done. Both drives have to be connected, and the target must not
-    already have something with that name in that category.
+    Where a title would go, without moving anything. Raises MoveError saying
+    why not: both drives must be connected, and the target must not already
+    hold that name in that category.
     """
     node = db.get_node(node_id)
     if node is None:
@@ -137,11 +130,8 @@ def find_or_make_redundancy_root(mount, redundancy_prefix=None):
 
 def plan_redundancy_copy(node_id, target_drive_id):
     """
-    Work out where a backup copy of a title would go, without copying.
-
-    The copy lands in the target's redundancy folder, under the same category
-    the title is in now. Both the redundancy folder and the category are
-    created if they are missing.
+    Where a backup copy would go, without copying. It lands in the target's
+    redundancy folder under the same category, creating either if missing.
     """
     node = db.get_node(node_id)
     if node is None:
@@ -161,10 +151,8 @@ def plan_redundancy_copy(node_id, target_drive_id):
     if target_mount is None:
         raise MoveError(f"'{target_drive['label']}' is not connected.")
 
-    if node["drive_id"] == target_drive_id:
-        # Allowed, but say what it does and does not protect against.
-        pass
-
+    # A copy onto the source drive is allowed. copy_title says what that does
+    # and does not protect against.
     source_path = os.path.abspath(os.path.join(source_mount, node["rel_path"]))
     if not os.path.exists(source_path):
         raise MoveError(f"Not on disk any more:\n{source_path}")
@@ -213,10 +201,8 @@ def plan_redundancy_copy(node_id, target_drive_id):
 
 def copy_title(plan, log=None, progress=None):
     """
-    Make a backup copy of a title. The source is never touched.
-
-    A copy that fails verification is left in place rather than deleted, so
-    it can be inspected, and the next attempt will refuse to overwrite it.
+    Back up a title. The source is never touched, and a copy that fails
+    verification is left in place so it can be inspected.
     """
     log = log or (lambda _m: None)
     source, target = plan["source_path"], plan["target_path"]
@@ -276,13 +262,10 @@ def _copy_with_robocopy(source, target, is_dir, log):
 # Command lines for the external copiers, as (args builder, friendly name).
 def _external_args(tool, tool_path, source, target_parent):
     if tool == "fastcopy":
-        # The trailing separator on /to= is required, not cosmetic. Without
-        # it FastCopy will not create the folder it is copying, and instead
-        # empties the source's contents straight into the parent - so moving
-        # "Videos/TV Shows/Some Show" lands its "Season 01" beside the other
-        # titles and the show folder never appears. os.path.join with an
-        # empty tail is how the separator is added without doubling one that
-        # is already there, as on a drive root.
+        # The trailing separator on /to= is required. Without it FastCopy
+        # empties the source into the parent instead of creating the folder,
+        # so a show's "Season 01" lands beside the other titles. join with an
+        # empty tail adds it without doubling one already there.
         return [tool_path, "/cmd=diff", "/auto_close",
                 f"/to={os.path.join(target_parent, '')}", source]
     # TeraCopy, and anything custom, take: <exe> Copy <source> <target dir>
@@ -291,12 +274,9 @@ def _external_args(tool, tool_path, source, target_parent):
 
 def _copy_with_external(tool, source, target, is_dir, tool_path, log, expected_bytes):
     """
-    Hand the copy to an external program.
-
-    These show their own progress window, which is usually the reason for
-    choosing one. They also tend to pass the job to an instance that is
-    already running and exit immediately, so the process finishing is not a
-    signal that the copy is done. The target is watched instead.
+    Hand the copy to an external program. These tend to pass the job to an
+    already-running instance and exit at once, so the process finishing means
+    nothing and the target is watched instead.
     """
     args = _external_args(tool, tool_path, source, os.path.dirname(target))
     log(f"    handing off to {os.path.basename(tool_path)}, its window shows the detail")
@@ -312,18 +292,13 @@ def _copy_with_external(tool, source, target, is_dir, tool_path, log, expected_b
 def wait_until_settled(target, expected_bytes, log, idle_timeout=120,
                        absent_timeout=30, poll=1.0):
     """
-    Wait for a copy to stop changing.
+    Wait for a copy to stop changing. Returns at the expected size, or once
+    it has not grown for idle_timeout; verify_copy decides if that is good
+    enough.
 
-    Returns once the target reaches the expected size, or once it has not
-    grown for idle_timeout seconds. The idle case is not treated as an error
-    here: verify_copy() is what decides whether the result is acceptable.
-
-    Nothing appearing at all is different, and is treated as an error. Every
-    copier creates its destination within a second or two of starting, so a
-    target that is still missing after absent_timeout means the copy is
-    landing somewhere else entirely - a wrong argument rather than a slow
-    disk. Waiting out the full idle_timeout for that only leaves the caller
-    reporting 0% for two minutes before failing anyway.
+    Nothing appearing at all is an error, not slowness. Every copier creates
+    its destination within a second or two, so a target still missing after
+    absent_timeout means the copy is landing somewhere else.
     """
     started = time.time()
     last_size, last_change = -1, time.time()
@@ -358,11 +333,9 @@ def copy_tree(source, target, is_dir, log, progress=None):
     """
     Copy source to target using the configured tool.
 
-    progress, if given, is called with (files_done, total_files, bytes_done,
-    total_bytes) roughly once a second. It works by measuring the target as
-    it fills rather than by parsing tool output, so the same progress is
-    reported whichever copier is in use. Without this a large title looks
-    frozen for the whole copy, since one title can be hundreds of gigabytes.
+    progress is called with (files_done, total_files, bytes_done,
+    total_bytes) about once a second. It measures the target as it fills
+    rather than parsing tool output, so it works with any copier.
     """
     settings = config.load()
     tool, path, note = config.resolve_copy_tool(settings)
@@ -396,9 +369,6 @@ def copy_tree(source, target, is_dir, log, progress=None):
         if tool == "robocopy":
             _copy_with_robocopy(source, target, is_dir, log)
         elif tool in ("teracopy", "fastcopy", "custom"):
-            # All driven the same way: hand the job over, then wait for the
-            # target to stop changing, since these tools tend to return
-            # before the copy is actually finished.
             _copy_with_external(tool, source, target, is_dir, path, log, total_bytes)
         else:
             _copy_with_python(source, target, is_dir, log)
@@ -429,11 +399,9 @@ def measure(path):
 
 def verify_copy(source, target, log):
     """
-    Confirm the copy arrived before anything is deleted.
-
-    Compares file count and total size. That catches the failures that
-    actually happen here, a copy that stopped partway or ran out of room,
-    without the cost of hashing hundreds of gigabytes.
+    Confirm the copy arrived before anything is deleted. Compares file count
+    and total size, which catches the failures that actually happen, a copy
+    stopped partway or out of room, without hashing hundreds of gigabytes.
     """
     if not os.path.exists(target):
         raise MoveError("The copy did not arrive: nothing at the target path.")
@@ -454,12 +422,8 @@ def verify_copy(source, target, log):
 
 
 def move_title(plan, log=None, progress=None):
-    """
-    Carry out a planned move: copy, verify, then delete the source.
-
-    The source is only removed once the copy has been checked. Tags follow
-    the title to its new path.
-    """
+    """Carry out a planned move: copy, verify, then delete the source. Tags
+    follow the title to its new path."""
     log = log or (lambda _m: None)
     source, target = plan["source_path"], plan["target_path"]
 
@@ -489,11 +453,9 @@ def move_title(plan, log=None, progress=None):
     log("    source removed")
 
     # Carry the tags across, then drop the old rows.
-    if plan["tags"]:
-        db.set_tag_bulk([(plan["target_drive_id"], plan["rel_path_after"])],
-                        plan["tags"][0], "add")
-        for tag in plan["tags"][1:]:
-            db.set_tag_bulk([(plan["target_drive_id"], plan["rel_path_after"])], tag, "add")
+    destination = [(plan["target_drive_id"], plan["rel_path_after"])]
+    for tag in plan["tags"]:
+        db.set_tag_bulk(destination, tag, "add")
     db.delete_node_subtree(plan["node_id"])
 
     return {

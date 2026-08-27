@@ -1,9 +1,8 @@
 """
 config.py - settings that live outside the database.
 
-A small JSON file next to the code, created with defaults on first run. It
-holds the things you might want to change by hand, chiefly which program
-copies files when moving a title between drives.
+A small JSON file next to the code, created with defaults on first run.
+Chiefly which program copies files when moving a title between drives.
 """
 
 import json
@@ -17,22 +16,13 @@ CONFIG_PATH = os.environ.get(
 
 DEFAULTS = {
     # auto | robocopy | teracopy | fastcopy | custom | python
-    #   auto      use robocopy if it is on the system, otherwise python
-    #   robocopy  ships with Windows, resumable, good with long paths
-    #   teracopy  needs copy_tool_path set below
-    #   fastcopy  needs copy_tool_path set below
-    #   custom    any copier taking a source and a destination
-    #   python    shutil.copytree, works everywhere, no frills
     "copy_tool": "auto",
     "teracopy_path": r"C:\Program Files\TeraCopy\TeraCopy.exe",
     # Full path to whichever program copy_tool names, when it needs one.
     "copy_tool_path": "",
-    # After copying, check the destination matches before deleting the source.
-    # Turning this off makes a move faster and considerably less safe.
+    # Off makes a move faster and considerably less safe.
     "verify_after_copy": True,
-    # Where the Backup button sends the database, as an rclone path such as
-    # "gdrive:Backups/PC/mediavault". Empty means the feature is off. rclone
-    # has to be installed and configured separately; see backup.py.
+    # rclone path for the Backup button, e.g. "gdrive:Backups/PC". Empty is off.
     "backup_target": "",
 }
 
@@ -61,14 +51,9 @@ def save(settings):
     return merged
 
 
-# Copy programs worth offering if they are already installed. Each entry is
-# (key, display name, exe name, [places to look]). robocopy and the built-in
-# copier need no path, so they are always available.
-#
-# The listed folders are only the common cases. Both of these installers also
-# happily drop themselves somewhere personal - FastCopy in particular defaults
-# to a folder under the user profile - so find_installed() falls back to the
-# uninstall registry, which records wherever it actually went.
+# (key, display name, exe name, [places to look]). The listed folders are the
+# common cases only; both installers also drop themselves under the user
+# profile, so find_installed() falls back to the uninstall registry.
 KNOWN_COPY_TOOLS = [
     ("teracopy", "TeraCopy", "TeraCopy.exe", [
         r"C:\Program Files\TeraCopy\TeraCopy.exe",
@@ -99,14 +84,9 @@ _UNINSTALL_KEYS = [
 
 def _registry_exe(display_name, exe_name):
     """
-    Where an installed program put its executable, according to the registry.
-
-    Windows records every installer under an uninstall key holding, among
-    other things, InstallLocation and DisplayIcon. That is the only reliable
-    way to find a program that was installed somewhere unusual - a per-user
-    folder, a second drive - without walking the whole disk.
-
-    Returns a path, or None on any other platform or if nothing matches.
+    Where an installed program put its executable, per the uninstall registry
+    keys. The only way to find one installed somewhere unusual without
+    walking the disk. None off Windows or if nothing matches.
     """
     try:
         import winreg
@@ -154,7 +134,7 @@ def _registry_exe(display_name, exe_name):
 
 
 def find_installed(display_name, exe_name, candidates):
-    """The path to a copy program, looked for in the three plausible places."""
+    """A copy program's path: usual folders, then PATH, then the registry."""
     for c in candidates:
         if c and os.path.isfile(c):
             return c
@@ -165,12 +145,8 @@ def find_installed(display_name, exe_name, candidates):
 
 
 def detect_copy_tools():
-    """
-    The copy programs available on this machine.
-
-    Saves hunting through Program Files: anything found in its usual place is
-    offered directly. Returns a list of dicts for the settings picker.
-    """
+    """The copy programs available on this machine, as dicts for the settings
+    picker."""
     found = [
         {"key": "auto", "name": "Automatic (robocopy if present)",
          "path": None, "available": True,
@@ -199,10 +175,9 @@ def detect_copy_tools():
 
 def resolve_copy_tool(settings=None):
     """
-    Which copier will actually be used, and whether it is available.
-
-    Returns (name, path_or_None, note). 'auto' is resolved here so the UI can
-    show what will really run rather than the word "auto".
+    Which copier will actually run: (name, path_or_None, note). 'auto' and a
+    missing executable are resolved here, so the UI can show what will really
+    happen rather than the word "auto".
     """
     settings = settings or load()
     choice = (settings.get("copy_tool") or "auto").lower()
@@ -210,8 +185,6 @@ def resolve_copy_tool(settings=None):
     if choice in ("teracopy", "fastcopy", "custom"):
         path = settings.get("copy_tool_path") or settings.get("teracopy_path")
         if path and os.path.isfile(path):
-            # A custom executable is driven the same way as TeraCopy: launch
-            # it, then wait for the target to settle.
             return ("teracopy" if choice == "teracopy" else choice), path, ""
         return "python", None, (f"{choice} is selected but no executable was "
                                 f"found at {path}. Falling back to the "

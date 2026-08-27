@@ -1,17 +1,13 @@
 """
-driveid.py - Give every physical drive a stable identity.
+driveid.py - a stable identity for every drive.
 
-Drive letters (E:, F:...) and mount points change depending on what else is
-plugged in, so we can't key the database on those. Instead, the first time
-a drive is scanned we write a small hidden marker file at its root
-containing a UUID. Every future scan reads that same file, so the drive is
-recognized as "the same drive" no matter what letter Windows assigns it.
+Drive letters move, so the database cannot key on them. The first scan
+writes a hidden marker file holding a UUID at the drive root, and every
+later scan reads it back.
 
-If the drive is read-only (can't write the marker), we fall back to a
-fingerprint derived from the volume's NTFS serial number, its label, and
-its total size. The serial number is assigned at format time and is the
-closest thing to a hardware id available without admin rights, so two
-different drives of the same capacity no longer collide.
+A drive that cannot be written to falls back to a fingerprint of its volume
+serial number, label and size. The serial is set at format time and is the
+nearest thing to a hardware id available without admin rights.
 """
 
 import os
@@ -59,16 +55,10 @@ def get_volume_info(drive_root):
 def get_share_name(drive_root):
     """
     The share behind a mapped network drive, e.g. "HDD-4TB-02" for a Z:
-    mapped to \\\\FILESERVER\\HDD-4TB-02.
+    mapped to \\\\FILESERVER\\HDD-4TB-02. Also accepts a UNC path directly.
 
-    Most SMB shares report no volume label at all - the label belongs to the
-    remote volume and the server does not hand it over - so a network drive
-    otherwise shows up nameless. Explorer falls back to the share name for
-    exactly this reason, and the naming convention here is written on the
-    share anyway, so the type is recoverable from it too.
-
-    Also handles a UNC path passed as the root directly. Returns None off
-    Windows, or when the root is neither mapped nor UNC.
+    Worth having because most SMB shares report no volume label at all, so a
+    network drive would otherwise be nameless.
     """
     if os.name != "nt" or not drive_root:
         return None
@@ -102,39 +92,25 @@ def _unc_for(drive_root):
 
 def get_drive_name(drive_root):
     """
-    What to call this drive: the share name if it is mapped over the network,
-    otherwise its volume label. None if neither is available.
+    What to call this drive: the share name if mapped over the network,
+    otherwise the volume label.
 
-    The share wins for a network drive because it is the name this machine
-    gives the mapping, and so the one the naming convention is written on.
-    The volume label underneath belongs to the other machine and is whatever
-    that machine happens to call the disk - a share mapped as HDD-4TB-02
-    reporting a label of "Storage" - so preferring it quietly throws the
-    convention away. Windows only hands the remote label over for some
-    shares, which is why this went unnoticed: the ones that report nothing
-    fell through to the share name and looked correct.
+    The share wins because it is the name this machine gave the mapping, and
+    so the one the naming convention is written on. The label underneath is
+    whatever the other machine calls the disk.
     """
     return get_share_name(drive_root) or get_volume_info(drive_root)[0]
 
 
 def _fallback_fingerprint(drive_root, total_bytes):
     """
-    Stable id for drives we can't write a marker file to (read-only media,
-    permission-locked system volumes).
-
-    Built from the volume serial number first - that is unique per formatted
-    volume and survives relettering. Label and size are folded in as
-    additional entropy, and as the only signal available if the serial can't
-    be read (non-Windows, an odd filesystem, or a network share).
-
-    For a network drive the UNC path stands in for both: Windows reports
-    neither serial nor label for most shares, and the drive letter it is
-    mapped to is exactly the thing this id is supposed to be independent of.
+    Stable id for a drive that cannot take a marker file. The volume serial
+    is unique per format and survives relettering; label and size are extra
+    entropy, and the only signal at all when the serial cannot be read.
     """
     label, serial = get_volume_info(drive_root)
     if not label:
-        # normpath("C:\\") basenames to "" - fall back to the raw root string
-        # rather than silently contributing nothing to the fingerprint.
+        # normpath("C:\\") basenames to "", which would contribute nothing.
         label = (_unc_for(drive_root)
                  or os.path.basename(os.path.normpath(drive_root))
                  or str(drive_root))

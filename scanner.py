@@ -1,37 +1,16 @@
 """
-scanner.py - Scan a drive and record it into the MediaVault database.
+scanner.py - walk a drive and record its tree into the database.
 
-USAGE
     py scanner.py D:\\ --label "Seagate 4TB Blue"
-    py scanner.py D:\\                                (label optional after first scan)
-    py scanner.py D:\\ --root-prefix videos             (default - matches "Videos", "Videos_SSD1", etc.)
-    py scanner.py D:\\ --redundancy-prefix redundancy    (default - matches "99_Redundancy", etc.)
-    py scanner.py D:\\ --redundancy-include "Desktop,Emulators"  (also scan these named subfolders inside redundancy)
+    py scanner.py D:\\ --redundancy-include "Desktop,Emulators"
 
-WHAT IT DOES
-    1. Reads the drive's total/used/free capacity.
-    2. Gets (or creates) a stable ID for the drive, independent of its
-       drive letter, via driveid.py.
-    3. Finds every top-level folder on the drive (root dirs)
-    4. Also finds top-level folders whose name CONTAINS --redundancy-prefix
-       (default "redundancy", matching e.g. "99_Redundancy") and scans them
-       the same way, tagged as backup/redundancy copies rather than primary
-       library folders.
-       IMPORTANT: inside a redundancy root only subfolders whose names start
-       with a numeric prefix (e.g. "00_Anime", "01_Movies", "02_TV Shows")
-       are scanned by default. Add extra inclusions with
-       --redundancy-include "FolderA,FolderB" (exact names, case-insensitive).
-    5. Recursively walks everything inside those folders and records the
-       FULL tree
-    6. The first time a title (a folder directly inside a category folder,
-       e.g. "Videos/00_Anime/<title>") is seen, it's auto-tagged based on
-       its category folder. Tags you add, remove, or change from the dashboard
-       afterwards are never overwritten by a rescan.
-    7. Writes everything to mediavault.db, replacing this drive's previous
-       snapshot so deletions/renames/moves are reflected accurately.
+Indexes top-level folders matching --root-prefix as the library, and any
+containing --redundancy-prefix as backup copies. Inside a redundancy root
+only recognisable media categories are walked, which keeps folders like
+"Google Drive" out of the index.
 
-Run this after you add, move, or delete files on a drive. Nothing else
-needs to be updated by hand.
+Each scan replaces that drive's previous snapshot, so deletions and renames
+are picked up. Tags are keyed by path in a separate table and survive.
 """
 
 import argparse
@@ -47,6 +26,28 @@ import tagging
 
 DEFAULT_ROOT_PREFIX = "videos,00_videos"
 DEFAULT_REDUNDANCY_PREFIX = "redundancy"
+
+# Files Windows and macOS scatter through folders. Skipped by name as well as
+# by attribute, because a drive reached over SMB or rclone reports no
+# attributes at all.
+JUNK_FILENAMES = {
+    "desktop.ini", "thumbs.db", "ehthumbs.db", "ehthumbs_vista.db",
+    ".ds_store", "._.ds_store", "folder.ico", "autorun.inf",
+}
+
+FILE_ATTRIBUTE_HIDDEN = 0x02
+FILE_ATTRIBUTE_SYSTEM = 0x04
+
+
+def is_junk_name(name):
+    return name.lower() in JUNK_FILENAMES
+
+
+def is_junk_attrs(stat_result):
+    """Hidden or system, so not media whatever it is called. Catches whatever
+    Windows invents next; returns False where no attributes are reported."""
+    attrs = getattr(stat_result, "st_file_attributes", 0)
+    return bool(attrs & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM))
 
 # The library layout MediaVault scaffolds onto a drive that has none.
 DEFAULT_LIBRARY_ROOT = "Videos"
@@ -67,9 +68,8 @@ def find_top_level_matches(drive_root, matches_fn):
 
 
 def is_numeric_prefixed(name):
-    """Returns True if the folder name starts with one or more digits followed
-    by an underscore - e.g. '00_Anime', '01_Movies', '02_TV Shows', '99_Redundancy'.
-    This is the convention used to mark intentional media-category folders."""
+    """Digits then an underscore, e.g. '00_Anime'. The convention that marks a
+    folder as a deliberate media category."""
     for i, ch in enumerate(name):
         if ch == "_" and i > 0:
             return True
@@ -80,22 +80,18 @@ def is_numeric_prefixed(name):
 
 def looks_like_category(name):
     """
-    Is this folder name a media category we'd expect inside a library?
+    Does this folder name look like a media category?
 
-    Accepts both naming conventions: the numeric-prefixed one ("00_Anime",
-    "01_Movies") and the plain one ("Anime", "Movies", "TV Shows"). The plain
-    case reuses tagging.py's category matching, so anything it can derive a
-    tag from counts - which keeps non-media folders that happen to sit at the
-    same level ("Desktop", "Google Drive") out.
+    Accepts both conventions, "00_Anime" and plain "Anime". The plain case
+    reuses tagging.py's matching, so anything it can derive a tag from
+    counts, which keeps "Desktop" and "Google Drive" out.
     """
     return is_numeric_prefixed(name) or bool(tagging.default_tags_for_category(name))
 
 
 def find_redundancy_subfolders(redundancy_root, extra_includes, log=print):
-    """Returns the list of subfolders inside a redundancy root that should be
-    scanned. Only recognizable media categories are included by default (see
-    looks_like_category). extra_includes is a set of lowercase folder names
-    that should additionally be included regardless of naming convention."""
+    """Subfolders of a redundancy root worth scanning. extra_includes is a set
+    of lowercase names to accept whatever they are called."""
     found = []
     try:
         with os.scandir(redundancy_root) as entries:
@@ -112,18 +108,24 @@ def find_redundancy_subfolders(redundancy_root, extra_includes, log=print):
 
 
 def compute_dir_sizes(root_path):
-    """
-    Pass 1 (bottom-up): compute the recursive size of every directory under
-    root_path (inclusive). Returns a dict {abs_path: size_bytes}.
-    """
+    """Pass 1, bottom-up: recursive size of every directory under root_path.
+    Returns {abs_path: size_bytes}."""
     sizes = {}
     for dirpath, dirnames, filenames in os.walk(root_path, topdown=False, onerror=lambda e: None):
         total = 0
         for fname in filenames:
+            if is_junk_name(fname):
+                continue
             fpath = os.path.join(dirpath, fname)
             try:
-                if not os.path.islink(fpath):
-                    total += os.path.getsize(fpath)
+                if os.path.islink(fpath):
+                    continue
+                stat = os.stat(fpath)
+                # Skipped here as well as in build_nodes, so folder totals do
+                # not count bytes that no node represents.
+                if is_junk_attrs(stat):
+                    continue
+                total += stat.st_size
             except OSError:
                 continue
         for dname in dirnames:
@@ -134,14 +136,11 @@ def compute_dir_sizes(root_path):
 
 def build_nodes(drive_root, root_path, dir_sizes, next_id, root_type, allowed_subfolders=None):
     """
-    Pass 2 (top-down): walk the same tree again, this time emitting flat
-    node records in parent-before-child order, with tmp_id/parent_tmp_id
-    links that db.replace_nodes() will remap to real row ids.
-    Returns (list_of_nodes, next_id).
+    Pass 2, top-down: flat node records in parent-before-child order, linked
+    by tmp_id which db.replace_nodes() remaps to real row ids.
 
-    allowed_subfolders: if not None, only these direct child paths of
-    root_path are walked (used to restrict redundancy roots to numeric-
-    prefixed category folders only).
+    allowed_subfolders, if given, restricts which direct children of
+    root_path are walked. Returns (nodes, next_id).
     """
     nodes = []
     counter = [next_id]  # threaded through via a mutable list for nested calls
@@ -194,8 +193,12 @@ def build_nodes(drive_root, root_path, dir_sizes, next_id, root_type, allowed_su
                 if child_newest and (newest is None or child_newest > newest):
                     newest = child_newest
             elif entry.is_file():
+                if is_junk_name(entry.name):
+                    continue
                 try:
                     stat = entry.stat()
+                    if is_junk_attrs(stat):
+                        continue
                     fsize, created, modified = stat.st_size, stat.st_ctime, stat.st_mtime
                 except OSError:
                     fsize, created, modified = 0, None, None
@@ -268,11 +271,8 @@ def scan_drive(drive_root, root_prefix, redundancy_prefix, redundancy_include=No
 
 
 def seed_default_tags(drive_id, nodes):
-    """For every title (depth==2 dir or file), auto-tag it based on its
-    category folder's name - but only if it has no tags yet
-    (see db.seed_default_tags_bulk).
-    Depth-2 files are movie/episode files sitting directly inside a category
-    folder (e.g. 01_Movies/SomeMovie.mkv) and should also be auto-tagged."""
+    """Auto-tag every title from its category folder's name, but only where it
+    has no tags at all yet, so hand-set tags are never overwritten."""
     by_tmp_id = {n["tmp_id"]: n for n in nodes}
     pairs = []
     for n in nodes:
@@ -284,11 +284,8 @@ def seed_default_tags(drive_id, nodes):
 
 
 def resolve_label(drive_id, drive_root, label=None):
-    """
-    Works out what to call this drive: an explicit label wins, then whatever
-    it was called on a previous scan, then the Windows volume label, then
-    just the drive letter. Returns (label, how_we_got_it).
-    """
+    """What to call this drive, best source first: explicit, remembered from a
+    previous scan, volume label, drive letter. Returns (label, source)."""
     if label:
         return label, "provided"
 
@@ -308,13 +305,9 @@ def resolve_label(drive_id, drive_root, label=None):
 
 def remembered_scan_options(drive_id):
     """
-    The scan options this drive was last scanned with, as a dict of keyword
-    arguments for scan_and_store. Empty if the drive is new or predates the
-    options being stored.
-
-    This is what stops a rescan started from the dashboard from silently
-    falling back to the defaults and dropping folders that were only indexed
-    because of a --redundancy-include.
+    The options this drive was last scanned with, as kwargs for
+    scan_and_store. Replaying them stops a rescan from the dashboard quietly
+    dropping folders that were only indexed because of --redundancy-include.
     """
     drive = db.get_drive(drive_id)
     if not drive:
@@ -336,15 +329,11 @@ def scan_and_store(drive_path, label=None, root_prefix=DEFAULT_ROOT_PREFIX,
                    redundancy_prefix=DEFAULT_REDUNDANCY_PREFIX, redundancy_include=None,
                    log=None):
     """
-    Scan one drive and write it to the database. This is the single entry
-    point used by the CLI below and by the dashboard's scan endpoint, so both
-    behave identically.
+    Scan one drive and write it to the database. The single entry point for
+    both the CLI and the dashboard, so the two cannot drift apart.
 
-    log: optional callable taking one string, for progress output. Defaults
-    to print() for CLI use; the web endpoint passes a collector instead.
-
-    Returns a summary dict. Raises ValueError if the path isn't a mounted
-    directory, so callers can report it however suits them.
+    log takes one string per progress line. Returns a summary dict, or raises
+    ValueError if the path is not a mounted directory.
     """
     log = log or print
 
@@ -419,23 +408,16 @@ def list_mounted_roots():
     return {f"{chr(ord('A') + i)}:\\" for i in range(26) if mask & (1 << i)}
 
 
-# A network drive whose far end has gone away - a mapped share on a PC that
-# is now off, an rclone mount whose phone left the wifi - stays mounted and
-# keeps its letter, but every read against it blocks until Windows gives up.
-# That can be tens of seconds, and it is enough to wedge the dashboard, since
-# listing drives touches every mounted root in turn.
+# A network drive whose far end has gone away keeps its letter, but every
+# read against it blocks until Windows gives up, which is long enough to
+# wedge the dashboard. So roots are probed on throwaway threads with a
+# deadline, and one that misses it is remembered as absent: the stuck thread
+# is not coming back, and without the cooldown every request would start
+# another.
 #
-# So each root is probed on its own throwaway thread and given a couple of
-# seconds to answer. A root that misses the deadline is treated as absent and
-# remembered, because the thread behind it is still stuck in the kernel and
-# will stay that way; without the cooldown every later request would start
-# another one and pile them up.
-# A local disk answers in milliseconds, so anything approaching a second
-# means it is gone. A network drive is different: a share on a PC that has
-# let its disks spin down, or a phone whose wifi is in power-save, routinely
-# takes several seconds to answer the first time and is perfectly healthy.
-# One timeout for both either drops working network drives or leaves the
-# page waiting on dead local ones, so they get their own.
+# The two timeouts differ because a local disk answers in milliseconds, while
+# a sleeping share or a phone on power-save routinely takes seconds and is
+# perfectly healthy.
 PROBE_TIMEOUT_SECONDS = 2.5
 NETWORK_PROBE_TIMEOUT_SECONDS = 10.0
 UNRESPONSIVE_COOLDOWN_SECONDS = 30.0
@@ -452,11 +434,9 @@ def ensure_readable(root):
     """
     Raise OSError if this drive cannot be listed at all.
 
-    Worth doing explicitly, because has_library_folders answers False for
-    both a drive with no library folder and one that could not be read -
-    find_top_level_matches catches the error and returns nothing. Without
-    this check a share whose host is switched off looks exactly like an
-    empty drive, and gets offered as something to set up.
+    Needed because has_library_folders answers False both for a drive with no
+    library and for one that could not be read, so without this a share whose
+    host is off looks like an empty drive and gets offered for setup.
     """
     with os.scandir(root) as entries:
         next(iter(entries), None)
@@ -480,12 +460,8 @@ def is_unresponsive(root):
 
 
 def unresponsive_roots():
-    """
-    Roots that are mounted but could not be read, so the UI can say so
-    rather than silently dropping a drive the user can plainly see in
-    Explorer. Covers both the ones that timed out and the ones that failed
-    outright, since to anyone looking at the page those are the same thing.
-    """
+    """Mounted roots that could not be read, so the UI can say so rather than
+    silently dropping a drive that is plainly visible in Explorer."""
     return sorted(r for r in _unresponsive if is_unresponsive(r))
 
 
@@ -493,14 +469,10 @@ def probe_roots(roots, work, timeout=probe_timeout_for):
     """
     Run work(root) against every root at once, dropping any that hang.
 
-    Returns {root: result} for the roots that answered in time. Threads are
-    started together rather than one after another, so the whole call costs
-    one timeout rather than one per drive. They are daemon threads: a stuck
-    one must never keep the interpreter from exiting.
-
-    timeout is either a number of seconds or, by default, a function of the
-    root - which is what lets a network share have longer than a local disk
-    while both are still probed in the same pass.
+    Threads start together, so the whole call costs one timeout rather than
+    one per drive, and they are daemons so a stuck one cannot hold up exit.
+    timeout is seconds, or a function of the root, which is what lets a
+    network share have longer than a local disk in the same pass.
     """
     seconds_for = timeout if callable(timeout) else (lambda _root: timeout)
 
@@ -513,12 +485,10 @@ def probe_roots(roots, work, timeout=probe_timeout_for):
             continue
 
         def run(r=root):
-            # Raising still counts as finished. Only a root that never came
-            # back at all is unresponsive - an error is an answer. This
-            # matters because for some probes an error is the ordinary case:
-            # reading the marker file from a drive that has never been
-            # scanned is meant to fail, and treating that as a dead drive
-            # would condemn every healthy drive awaiting setup.
+            # An error is an answer, so raising still counts as finished. For
+            # some probes failing is the ordinary case: reading the marker
+            # file from a never-scanned drive is meant to fail, and calling
+            # that dead would condemn every drive awaiting setup.
             try:
                 results[r] = work(r)
             except OSError:
@@ -530,8 +500,7 @@ def probe_roots(roots, work, timeout=probe_timeout_for):
         thread.start()
         threads.append((root, thread))
 
-    # Each root is measured from the same start, since they all began
-    # together; only the allowance differs.
+    # All measured from one start, since they all began together.
     started = time.monotonic()
     for root, thread in threads:
         deadline = started + seconds_for(root)
@@ -558,19 +527,12 @@ def get_connected_drives(max_age=CONNECTED_CACHE_SECONDS, include_network=True):
     """
     Which known drives are plugged in right now: {drive_id: root_path}.
 
-    Reads the marker file from every mounted volume. That is the only
-    reliable answer, because last_seen_path from the previous scan can be
-    stale, or the letter may now belong to a different drive entirely.
+    Reads the marker file from every mounted volume, since last_seen_path can
+    be stale or the letter may now belong to a different drive. Cached for a
+    few seconds because search calls this on every keystroke.
 
-    Results are cached for a few seconds. Search calls this on every
-    keystroke, and hitting all 26 possible drive letters each time would
-    spin up sleeping external drives for no reason.
-
-    include_network False leaves the mapped drives out and does not read
-    them at all. A host that is switched off refuses in milliseconds, but
-    one that is merely asleep leaves the read hanging until the timeout - so
-    without this the local drives would wait on it, which is the whole thing
-    deferring the network check was meant to avoid.
+    include_network False leaves mapped drives untouched, so local drives do
+    not wait on a sleeping host.
     """
     cache = _connected_cache[bool(include_network)]
     now = time.monotonic()
@@ -607,20 +569,17 @@ def find_mounted_drive(drive_id, max_age=CONNECTED_CACHE_SECONDS):
     return get_connected_drives(max_age).get(drive_id)
 
 
-# GetDriveTypeW return values we are willing to scan.
+# GetDriveTypeW values. Network drives are scannable so a disk in another PC,
+# or a mounted phone, can be indexed like any other. Identity still comes from
+# the marker file, so it is the same drive whatever letter it lands on.
 DRIVE_REMOVABLE = 2
 DRIVE_FIXED = 3
 DRIVE_REMOTE = 4
-# Network drives are included so a drive physically in another PC can be
-# mapped to a letter here and indexed like any other. Identity still comes
-# from the marker file at the drive root, so it is recognized as the same
-# drive whichever machine reaches it and whatever letter it is mapped to.
 SCANNABLE_DRIVE_TYPES = {DRIVE_REMOVABLE, DRIVE_FIXED, DRIVE_REMOTE}
 
 
 def get_drive_type(root_path):
-    """Windows drive type number, or None off Windows. 5 is a CD-ROM, which
-    we skip."""
+    """Windows drive type number, or None off Windows."""
     if os.name != "nt":
         return None
     try:
@@ -641,15 +600,11 @@ _bus_cache = {}
 
 def get_bus_type(root_path):
     """
-    Which bus a drive is attached to, e.g. 'USB', 'SATA', 'NVMe'.
+    Which bus a drive is attached to, e.g. 'USB', 'SATA', 'NVMe', 'SD'.
 
-    GetDriveType is not enough here. Windows only calls a volume "removable"
-    when the media itself can be swapped, as with a card reader or a flash
-    drive, so an external USB hard disk reports as a fixed drive like any
-    internal one. Asking the device for its bus type is the only way to tell
-    that it is plugged in over USB and can be unplugged and carried away.
-
-    Returns None off Windows, or when the device will not answer.
+    GetDriveType is not enough: Windows only calls a volume removable when
+    the media itself can be swapped, so an external USB hard disk reports as
+    fixed. Returns None off Windows or when the device will not answer.
     """
     if os.name != "nt" or not root_path:
         return None
@@ -712,13 +667,8 @@ def _query_bus_type(letter):
 
 
 def is_external(root_path):
-    """
-    Can this drive be unplugged and stored somewhere else?
-
-    True for anything on the USB bus, including external hard disks that
-    Windows otherwise reports as fixed, and for media Windows does call
-    removable.
-    """
+    """Can this drive be unplugged and stored somewhere else? True for the USB
+    bus, including external hard disks Windows reports as fixed."""
     if get_bus_type(root_path) == "USB":
         return True
     return get_drive_type(root_path) == DRIVE_REMOVABLE
@@ -739,17 +689,12 @@ def has_library_folders(drive_root, root_prefix=DEFAULT_ROOT_PREFIX,
 
 def find_scannable_drives():
     """
-    Connected drives worth scanning, as a list of dicts with root, drive_id
-    (None if unknown), and reason.
+    Connected drives worth scanning: {root, drive_id, label, reason}.
 
-    A drive qualifies if MediaVault already knows it, or if it has a library
-    or redundancy folder on it. Everything else is left alone, so scanning
-    does not create empty entries for the system drive or for a USB stick
-    that happens to be plugged in. Optical drives are skipped outright.
-
-    A mapped network drive counts, so drives living in another PC on the
-    network can be indexed from here once they are given a drive letter. A
-    bare UNC path cannot - Windows only reports lettered volumes.
+    A drive qualifies if it is already known, or has a library or redundancy
+    folder. Everything else is left alone, so scanning does not create empty
+    entries for the system drive or a stick that happens to be plugged in.
+    Only lettered volumes are visible to Windows here, not bare UNC paths.
     """
     known = {d["drive_id"]: d for d in db.get_all_drives()}
     connected = get_connected_drives(max_age=0)
@@ -773,9 +718,8 @@ def find_scannable_drives():
         ensure_readable(root)
         return {
             "has_library": has_library_folders(root),
-            # No stored label yet, so fall back to whatever the volume calls
-            # itself - the confirm prompt reads better with a name than with
-            # a bare drive letter.
+            # No stored label yet, so the confirm prompt uses whatever the
+            # volume calls itself rather than a bare drive letter.
             "label": driveid.get_drive_name(root),
         }
 
@@ -790,12 +734,9 @@ def find_scannable_drives():
 
 def deferred_network_roots():
     """
-    Mounted network drives, named, without touching the network.
-
-    The share name comes from the local redirector's own table, so it is
-    there in well under a millisecond whether or not the far end is awake.
-    That is what lets the dashboard list a network drive by its proper name
-    and offer to check it, rather than either hiding it or blocking on it.
+    Mounted network drives, named, without touching the network. The share
+    name comes from the local redirector's table, so it is instant whether or
+    not the far end is awake.
     """
     out = []
     for root in sorted(list_mounted_roots()):
@@ -811,26 +752,19 @@ def deferred_network_roots():
 
 def find_setup_candidates(include_network=True):
     """
-    Connected drives that do NOT have the folder layout yet.
+    Connected drives that do not have the folder layout yet, for the setup
+    panel. Looks at mounted volumes rather than known drives, because a drive
+    with no library folder is never scanned and so is not in the database.
 
-    These are the drives the dashboard can offer to set up. A drive with no
-    library folder is never scanned, so it does not appear in the database at
-    all, which is why this looks at mounted volumes rather than known drives.
-
-    With include_network False the network drives are left out entirely and
-    not touched at all. A share whose host is asleep cannot be woken by
-    reading it, so the wait before giving up is dead time - and it is spent
-    in front of someone who only wanted to see their local disks. The
-    dashboard lists those drives separately from deferred_network_roots()
-    and checks them when asked.
+    include_network False leaves network drives untouched; the dashboard
+    lists them from deferred_network_roots() and checks them on request.
     """
     known = {d["drive_id"] for d in db.get_all_drives()}
     connected = get_connected_drives(max_age=0, include_network=include_network)
     by_root = {root: drive_id for drive_id, root in connected.items()}
 
-    # get_drive_type only asks Windows what kind of letter this is, which is
-    # answered from memory and cannot block, so it is safe to do up front and
-    # narrows what has to be probed.
+    # get_drive_type is answered from memory and cannot block, so it narrows
+    # the set before anything touches a volume.
     types = {}
     for root in sorted(list_mounted_roots()):
         drive_type = get_drive_type(root)
@@ -840,8 +774,7 @@ def find_setup_candidates(include_network=True):
             continue
         types[root] = drive_type
 
-    # These all touch the volume itself, so they go on the probe thread
-    # together - one hang costs one timeout rather than three.
+    # Both touch the volume, so they share one probe thread and one timeout.
     def describe(root):
         ensure_readable(root)
         return {
@@ -854,14 +787,13 @@ def find_setup_candidates(include_network=True):
     candidates = []
     for root, drive_type in types.items():
         info = described.get(root)
-        # Absent means the drive never answered. Offering to scaffold folders
-        # onto a drive we cannot even read would only fail later, and noisily.
+        # Absent means it never answered, and scaffolding onto a drive that
+        # cannot be read would only fail later.
         if info is None or info["has_library"]:
             continue
 
         drive_id = by_root.get(root)
-        # Letter and name are kept apart so the UI can lay them out in
-        # columns. Joining them here is what made the letter appear twice.
+        # Letter and name stay apart so the UI can column them.
         candidates.append({
             "root": root,
             "drive_id": drive_id,
@@ -876,12 +808,9 @@ def find_setup_candidates(include_network=True):
 def create_library_structure(drive_root, root_name=DEFAULT_LIBRARY_ROOT,
                              categories=None):
     """
-    Create the expected Videos/<category> tree on a drive that has none.
-
-    Never touches or overwrites anything that already exists - os.makedirs
-    with exist_ok means an existing folder is simply left alone, so this is
-    safe to run against a drive that's partway set up. Returns the list of
-    folders it actually created (relative paths), which may be empty.
+    Create the Videos/<category> tree on a drive that has none. Safe on a
+    drive that is partway set up, since existing folders are left alone.
+    Returns the relative paths actually created, which may be empty.
     """
     categories = categories or DEFAULT_CATEGORIES
     created = []

@@ -39,24 +39,29 @@
   }
   .mono{font-family:'IBM Plex Mono', monospace;}
 
-  header{ max-width:var(--page-max); margin:0 auto; padding:40px var(--page-pad) 22px; }
+  /* Title and capacity share one row rather than stacking, which is most of
+     the vertical space this page used to waste before the drives start. */
+  header{ max-width:var(--page-max); margin:0 auto; padding:22px var(--page-pad) 10px; }
+  .head-row{ display:flex; gap:20px; align-items:stretch; flex-wrap:wrap; }
+  .head-id{ flex:0 0 auto; align-self:center; }
   .eyebrow{
-    font-family:'IBM Plex Mono', monospace; font-size:12px; letter-spacing:0.14em;
-    text-transform:uppercase; color:var(--accent); margin-bottom:10px;
+    font-family:'IBM Plex Mono', monospace; font-size:11px; letter-spacing:0.14em;
+    text-transform:uppercase; color:var(--accent); margin-bottom:4px;
   }
-  h1{ font-size:32px; font-weight:700; margin:0 0 6px; letter-spacing:-0.01em; }
-  .sub{ color:var(--text-dim); font-size:14px; margin-bottom:32px; }
+  h1{ font-size:24px; font-weight:700; margin:0 0 3px; letter-spacing:-0.01em; }
+  .sub{ color:var(--text-dim); font-size:12.5px; }
 
   .overview{
-    display:grid; grid-template-columns: 1.4fr repeat(4, 1fr); gap:1px;
+    flex:1 1 520px; min-width:0;
+    display:grid; grid-template-columns: 1.5fr repeat(4, 1fr); gap:1px;
     background:var(--line); border:1px solid var(--line); border-radius:10px; overflow:hidden;
   }
-  .overview .cell{ background:var(--panel); padding:18px 20px; }
+  .overview .cell{ background:var(--panel); padding:10px 14px; }
   .overview .cell .label{
-    font-family:'IBM Plex Mono', monospace; font-size:11px; letter-spacing:0.08em;
-    text-transform:uppercase; color:var(--text-faint); margin-bottom:8px;
+    font-family:'IBM Plex Mono', monospace; font-size:10px; letter-spacing:0.08em;
+    text-transform:uppercase; color:var(--text-faint); margin-bottom:4px;
   }
-  .overview .cell .value{ font-family:'IBM Plex Mono', monospace; font-size:22px; font-weight:600; }
+  .overview .cell .value{ font-family:'IBM Plex Mono', monospace; font-size:17px; font-weight:600; }
   .overview .gauge-cell{ display:flex; flex-direction:column; justify-content:center; }
 
   .gauge{ display:flex; gap:2px; height:16px; margin-top:4px; }
@@ -69,12 +74,37 @@
     font-size:11px; color:var(--text-faint); margin-top:6px;
   }
 
-  .lowspace-banner{ max-width:var(--page-max); margin:20px auto 0; padding:0 var(--page-pad); }
-  .lowspace-banner .box{
-    border:1px solid var(--warn); background:rgba(242,166,90,0.08); border-radius:10px;
-    padding:14px 18px; font-size:13px; color:#F0C89A;
+  /* Warnings are a row of pills that expand on click, so they stay visible
+     without costing a paragraph of height before anything useful. */
+  .alerts{ display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+  .alert-pill{
+    display:inline-flex; align-items:center; gap:7px; cursor:pointer;
+    border-radius:20px; padding:4px 13px; font-size:12px;
+    font-family:'IBM Plex Sans',sans-serif; border:1px solid;
   }
-  .lowspace-banner .box b{ color:var(--warn); }
+  .alert-pill .ai{ font-size:12px; line-height:1; }
+  .alert-pill.warn{
+    border-color:rgba(242,166,90,0.45); background:rgba(242,166,90,0.10); color:#F0C89A;
+  }
+  .alert-pill.warn:hover{ border-color:var(--warn); }
+  .alert-pill.hint{
+    border-color:rgba(167,139,250,0.45); background:rgba(167,139,250,0.10); color:#C4B5FD;
+  }
+  .alert-pill.hint:hover{ border-color:var(--purple); }
+  .alert-pill .caret{ font-size:9px; opacity:0.7; }
+  .alert-detail{
+    display:none; width:100%; margin-top:2px; font-size:12.5px; line-height:1.65;
+    border-radius:10px; padding:11px 15px; border:1px solid;
+  }
+  .alert-detail.show{ display:block; }
+  .alert-detail.warn{
+    border-color:rgba(242,166,90,0.3); background:rgba(242,166,90,0.07); color:#F0C89A;
+  }
+  .alert-detail.warn b{ color:var(--warn); }
+  .alert-detail.hint{
+    border-color:rgba(167,139,250,0.3); background:rgba(167,139,250,0.07); color:#C4B5FD;
+  }
+  .alert-detail.hint b{ color:var(--purple); }
 
   .toolbar{ max-width:var(--page-max); margin:28px auto 0; padding:0 var(--page-pad); position:relative; }
   .toolbar-row{ display:flex; gap:12px; align-items:center; }
@@ -439,8 +469,15 @@
     padding:11px 13px; border-top:1px solid var(--line);
   }
   .sugg-item:hover{ background:rgba(255,255,255,0.02); }
-  .sugg-name{ font-size:13px; color:var(--text); }
+  .sugg-name{ font-size:13px; color:var(--text); display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
   .sugg-size{ font-family:'IBM Plex Mono',monospace; font-size:11.5px; color:var(--text-dim); }
+  /* The same toggles as the tree, so a title can be starred or marked as in
+     use without leaving the panel. Either re-runs the engine, since both
+     change what it proposes. */
+  .sugg-tags{ display:inline-flex; gap:5px; flex-shrink:0; }
+  .sugg-tags .sys-tag{ font-size:10.5px; padding:0 6px; }
+  .sugg-body.recalc{ opacity:0.45; pointer-events:none; }
+  .sugg-spare{ font-size:11px; color:var(--warn); margin-top:5px; line-height:1.55; }
   .sugg-why{ font-size:11.5px; color:var(--text-faint); line-height:1.6; margin:5px 0 8px; }
   .sugg-arrow{ font-size:12px; color:var(--text-dim); margin-bottom:4px; }
   .sugg-arrow select{
@@ -479,8 +516,14 @@
   .conn-label.on{ color:var(--accent); }
   .conn-label.off{ color:var(--text-faint); }
 
-  .filter-bar{ display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; align-items:center; }
-  .filter-label{ font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--text-faint); letter-spacing:0.05em; text-transform:uppercase; margin-right:4px; }
+  .filter-bar{ display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; align-items:center; }
+  /* One row holding every filter group, so they cost one line rather than
+     four. Each group keeps its own label and the groups are split by rules. */
+  .filter-bar.combined{ gap:6px; }
+  .filter-group{ display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+  .filter-sep{ width:1px; align-self:stretch; background:var(--line); margin:2px 5px; }
+  .filter-spacer{ flex:1 1 auto; }
+  .filter-label{ font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--text-faint); letter-spacing:0.05em; text-transform:uppercase; margin-right:2px; }
   .filter-chip{
     background:var(--panel); border:1px solid var(--line); color:var(--text-dim);
     border-radius:20px; padding:5px 12px; font-size:12.5px; cursor:pointer;
@@ -516,7 +559,62 @@
     margin-right:4px;
   }
 
-  main{ max-width:var(--page-max); margin:22px auto 0; padding:0 var(--page-pad); }
+  main{ max-width:var(--page-max); margin:16px auto 0; padding:0 var(--page-pad); }
+
+  /* ---- drive layout ----
+     Two views, chosen by the toggle in the toolbar and remembered per
+     browser. Grid puts shut cards side by side, since a shut card is only a
+     name, some badges and a gauge. An open card always spans the full width:
+     the tree needs the room, and only one card ever being wide is what keeps
+     scrolling and jump-to-node behaving as they did. */
+  .drive-list.grid{
+    display:grid; gap:14px;
+    grid-template-columns: repeat(auto-fill, minmax(430px, 1fr));
+    align-items:start;
+  }
+  .drive-list.grid .drive{ margin-bottom:0; }
+  .drive-list.grid .drive.open{ grid-column:1 / -1; }
+
+  .view-toggle{ display:inline-flex; flex-shrink:0; }
+  .view-toggle .icon-btn{ border-radius:0; }
+  .view-toggle .icon-btn:first-child{ border-radius:8px 0 0 8px; }
+  .view-toggle .icon-btn:last-child{ border-radius:0 8px 8px 0; margin-left:-1px; }
+  .view-toggle .icon-btn.on{
+    color:var(--accent); border-color:var(--accent); background:rgba(79,209,197,0.14);
+    position:relative; z-index:1;
+  }
+
+  /* ---- search clear ---- */
+  .search-wrap{ position:relative; flex:1; display:flex; }
+  .search-wrap input{ flex:1; padding-right:34px; }
+  .search-clear{
+    position:absolute; right:1px; top:1px; bottom:1px; width:32px;
+    background:none; border:none; cursor:pointer; color:var(--text-faint);
+    font-size:16px; line-height:1; border-radius:0 8px 8px 0; display:none;
+    align-items:center; justify-content:center; transition:color .12s, background .12s;
+  }
+  .search-wrap.filled .search-clear{ display:flex; }
+  .search-clear:hover{ color:var(--crit); background:rgba(232,96,76,0.14); }
+
+  /* ---- layout hint ----
+     A wrench on a title whose folder layout is out of date. Purple, so it
+     does not read as an error: nothing is wrong with the files. */
+  .hint-btn{
+    background:none; border:none; cursor:help; padding:0 2px; font-size:12px;
+    line-height:1; flex-shrink:0; color:var(--purple);
+  }
+  .hint-btn:hover{ color:#DDD6FE; }
+  .filter-chip.hint .chip-ic{ color:var(--purple); }
+  .filter-chip.hint.active{
+    background:rgba(167,139,250,0.14); border-color:var(--purple); color:var(--purple);
+  }
+  .type-chip.active{ background:rgba(79,209,197,0.15); border-color:var(--accent); color:var(--accent); }
+  .sort-select{
+    background:var(--panel); border:1px solid var(--line); color:var(--text-dim);
+    border-radius:20px; padding:5px 10px; font-size:12.5px; cursor:pointer;
+    font-family:'IBM Plex Sans',sans-serif; outline:none;
+  }
+  .sort-select:hover{ border-color:var(--accent-dim); }
 
   /* No overflow:hidden here. It made the card a scroll container, so
      scrollIntoView() on a row scrolled the card instead of the page, and it
@@ -526,8 +624,9 @@
   .drive-head{ border-radius:9px 9px 0 0; }
   .drive:not(.open) .drive-head{ border-radius:9px; }
   .drive-body{ border-radius:0 0 9px 9px; }
-  /* A drive with nothing matching the current filters drops out entirely. */
-  .drive.filtered-out{ display:none; }
+  /* A drive drops out entirely when nothing inside it matches the title
+     filters, or when the drive filters exclude the card itself. */
+  .drive.filtered-out, .drive.drive-hidden{ display:none; }
   .drive-head{ padding:18px 20px 16px; cursor:pointer; display:flex; flex-direction:column; gap:10px; }
   .drive-top-row{ display:flex; justify-content:space-between; align-items:baseline; gap:16px; }
   .drive-name{ font-size:17px; font-weight:600; }
@@ -869,44 +968,84 @@
 </datalist>
 
 <header>
-  <div class="eyebrow">MediaVault</div>
-  <h1>Drive Inventory</h1>
-  <div class="sub">{{ stats.drive_count }} drives indexed</div>
-
-  <div class="overview">
-    <div class="cell gauge-cell">
-      <div class="label">Overall capacity</div>
-      <div class="gauge {% if stats.pct_used > 90 %}crit{% elif stats.pct_used > 80 %}warn{% endif %}">
-        {% for i in range(40) %}
-          <div class="seg {% if i < (stats.pct_used/100*40)|round(0,'floor') %}filled{% endif %}"></div>
-        {% endfor %}
-      </div>
-      <div class="gauge-caption"><span>{{ stats.pct_used }}% used</span><span>{{ stats.free_h }} free</span></div>
+  <div class="head-row">
+    <div class="head-id">
+      <div class="eyebrow">MediaVault</div>
+      <h1>Drive Inventory</h1>
+      <div class="sub">{{ stats.drive_count }} drives · {{ stats.connected_count }} connected</div>
     </div>
-    <div class="cell"><div class="label">Drives</div><div class="value">{{ stats.drive_count }}</div></div>
-    <div class="cell"><div class="label">Total capacity</div><div class="value">{{ stats.total_h }}</div></div>
-    <div class="cell"><div class="label">Used</div><div class="value">{{ stats.used_h }}</div></div>
-    <div class="cell"><div class="label">Free</div><div class="value">{{ stats.free_h }}</div></div>
-  </div>
-</header>
 
-{% if low_space_drives %}
-<div class="lowspace-banner">
-  <div class="box">
-    <b>Low space:</b>
-    {% for d in low_space_drives %}{{ d.label }} ({{ d.free_h }} free){% if not loop.last %}, {% endif %}{% endfor %}
-    Expand a drive below and check its "largest folders" panel for where to start.
-    Titles marked <span class="shield full">🛡</span> already have a complete copy
-    elsewhere, so they are the safest to remove.
+    <div class="overview">
+      <div class="cell gauge-cell">
+        <div class="label">Overall capacity</div>
+        <div class="gauge {% if stats.pct_used > 90 %}crit{% elif stats.pct_used > 80 %}warn{% endif %}">
+          {% for i in range(40) %}
+            <div class="seg {% if i < (stats.pct_used/100*40)|round(0,'floor') %}filled{% endif %}"></div>
+          {% endfor %}
+        </div>
+        <div class="gauge-caption"><span>{{ stats.pct_used }}% used</span><span>{{ stats.free_h }} free</span></div>
+      </div>
+      <div class="cell"><div class="label">Drives</div><div class="value">{{ stats.drive_count }}</div></div>
+      <div class="cell"><div class="label">Total</div><div class="value">{{ stats.total_h }}</div></div>
+      <div class="cell"><div class="label">Used</div><div class="value">{{ stats.used_h }}</div></div>
+      <div class="cell"><div class="label">Free</div><div class="value">{{ stats.free_h }}</div></div>
+    </div>
   </div>
-</div>
-{% endif %}
+
+  {% if low_space_drives or stats.hint_count %}
+  <div class="alerts">
+    {% if low_space_drives %}
+    <button class="alert-pill warn" data-alert="lowspace">
+      <span class="ai">⚠</span> {{ low_space_drives|length }} drive(s) low on space
+      <span class="caret">▾</span>
+    </button>
+    {% endif %}
+    {% if stats.hint_count %}
+    <button class="alert-pill hint" data-alert="layout">
+      <span class="ai">🔧</span> {{ stats.hint_count }} title(s) with an old folder layout
+      <span class="caret">▾</span>
+    </button>
+    {% endif %}
+
+    {% if low_space_drives %}
+    <div class="alert-detail warn" id="alert-lowspace">
+      <b>Low space:</b>
+      {% for d in low_space_drives %}{{ d.label }} ({{ d.free_h }} free){% if not loop.last %}, {% endif %}{% endfor %}.
+      Expand a drive and check its largest folders panel for where to start.
+      Titles marked <span class="shield full">🛡</span> already have a complete copy
+      elsewhere, so they are the safest to remove.
+    </div>
+    {% endif %}
+    {% if stats.hint_count %}
+    <div class="alert-detail hint" id="alert-layout">
+      <b>Old folder layouts.</b> These titles are stored in a way that hides them
+      from backup matching and tags, so they are worth tidying by hand. Each is
+      marked 🔧 in the tree, and the <b>🔧 Layout</b> filter shows only those.
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+</header>
 
 <div class="toolbar">
   <div class="toolbar-row">
-    <input id="search" type="text" placeholder="Search for a show or movie across every drive…" oninput="onSearchInput()" autocomplete="off">
+    <span class="search-wrap" id="search-wrap">
+      <input id="search" type="text" placeholder="Search for a show or movie across every drive…" oninput="onSearchInput()" autocomplete="off">
+      <button class="search-clear" onclick="clearSearch()" title="Clear the search"
+              aria-label="Clear search">×</button>
+    </span>
     {# Tree controls. The macros further down are defined after this point in
        the template, so these three icons are written out inline. #}
+    <span class="view-toggle">
+      <button id="view-list" class="icon-btn" onclick="setDriveView('list')"
+              title="One drive per row" aria-label="List view">
+        <svg viewBox="0 0 16 16" class="ic" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      </button>
+      <button id="view-grid" class="icon-btn" onclick="setDriveView('grid')"
+              title="Drives side by side, expanding to full width" aria-label="Grid view">
+        <svg viewBox="0 0 16 16" class="ic" aria-hidden="true"><rect x="2" y="2.5" width="5" height="5" rx="1" fill="none" stroke="currentColor" stroke-width="1.4"/><rect x="9" y="2.5" width="5" height="5" rx="1" fill="none" stroke="currentColor" stroke-width="1.4"/><rect x="2" y="9.5" width="5" height="4" rx="1" fill="none" stroke="currentColor" stroke-width="1.4"/><rect x="9" y="9.5" width="5" height="4" rx="1" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>
+      </button>
+    </span>
     <span class="icon-group">
       <button id="expand-all-btn" class="icon-btn" onclick="expandAll()"
               title="Expand every drive" aria-label="Expand all">
@@ -958,38 +1097,81 @@
     </div>
   </div>
 
-  <div class="filter-bar">
-    <span class="filter-label">Backup</span>
-    <button class="filter-chip state full" data-state="full" onclick="toggleStateFilter(this)">
-      <span class="chip-ic">🛡</span> Backed up
-    </button>
-    <button class="filter-chip state partial" data-state="partial" onclick="toggleStateFilter(this)">
-      <span class="chip-ic">⛊</span> Partial
-    </button>
-    <button class="filter-chip state split" data-state="split" onclick="toggleStateFilter(this)">
-      <span class="chip-ic">⇄</span> Split
-    </button>
-    <button class="filter-chip state none" data-state="none" onclick="toggleStateFilter(this)">
-      Nowhere else
-    </button>
-  </div>
+  {# Backup state, layout and tags on one line, with the summary and clear
+     button pushed to the far end of the same row. #}
+  <div class="filter-bar combined">
+    <span class="filter-group">
+      <span class="filter-label">Backup</span>
+      <button class="filter-chip state full" data-state="full" onclick="toggleStateFilter(this)">
+        <span class="chip-ic">🛡</span> Backed up
+      </button>
+      <button class="filter-chip state partial" data-state="partial" onclick="toggleStateFilter(this)">
+        <span class="chip-ic">⛊</span> Partial
+      </button>
+      <button class="filter-chip state split" data-state="split" onclick="toggleStateFilter(this)">
+        <span class="chip-ic">⇄</span> Split
+      </button>
+      <button class="filter-chip state none" data-state="none" onclick="toggleStateFilter(this)">
+        Nowhere else
+      </button>
+    </span>
 
-  <div class="filter-bar">
-    <span class="filter-label">Tag</span>
-    <button class="filter-chip sys star" data-tag="{{ star_tag }}" onclick="toggleTagFilter(this)">★ Starred</button>
-    <button class="filter-chip sys watching" data-tag="{{ watching_tag }}" onclick="toggleTagFilter(this)">▶ Watching</button>
-    {% for t in all_tags %}{% if t|lower not in system_tags %}
-      <button class="filter-chip" data-tag="{{ t }}" onclick="toggleTagFilter(this)">{{ t }}</button>
-    {% endif %}{% endfor %}
-  </div>
+    <span class="filter-sep"></span>
 
-  <div class="filter-bar">
+    <span class="filter-group">
+      <span class="filter-label">Tag</span>
+      <button class="filter-chip sys star" data-tag="{{ star_tag }}" onclick="toggleTagFilter(this)">★ Starred</button>
+      <button class="filter-chip sys watching" data-tag="{{ watching_tag }}" onclick="toggleTagFilter(this)">▶ Watching</button>
+      {% if stats.hint_count %}
+      <button class="filter-chip hint" onclick="toggleHintFilter(this)"
+              title="Titles whose folder layout is out of date">
+        <span class="chip-ic">🔧</span> Layout
+      </button>
+      {% endif %}
+      {% for t in all_tags %}{% if t|lower not in system_tags %}
+        <button class="filter-chip" data-tag="{{ t }}" onclick="toggleTagFilter(this)">{{ t }}</button>
+      {% endif %}{% endfor %}
+    </span>
+
+    <span class="filter-spacer"></span>
     <span id="filter-summary" class="filter-summary"></span>
     <button class="filter-chip clear" onclick="clearAllFilters()">Clear filters</button>
   </div>
+
+  {# Drives rather than titles, so this row acts on the cards themselves. #}
+  <div class="filter-bar combined">
+    <span class="filter-group">
+      <span class="filter-label">Drives</span>
+      {% for value, label in drive_types %}
+        <button class="filter-chip type-chip" data-type="{{ value }}"
+                onclick="toggleTypeFilter(this)">{{ label }}</button>
+      {% endfor %}
+      <button class="filter-chip type-chip" data-type="unknown"
+              onclick="toggleTypeFilter(this)">Unknown</button>
+      <button class="filter-chip type-chip" data-connected="1"
+              onclick="toggleConnectedFilter(this)">Connected</button>
+    </span>
+
+    <span class="filter-sep"></span>
+
+    <span class="filter-group">
+      <span class="filter-label">Sort</span>
+      <select id="drive-sort" class="sort-select" onchange="applyDriveSort()">
+        <option value="label">Name</option>
+        <option value="free">Most free space</option>
+        <option value="freepct">Most free, by share</option>
+        <option value="used">Fullest</option>
+        <option value="size">Largest</option>
+        <option value="type">Type</option>
+      </select>
+    </span>
+
+    <span class="filter-spacer"></span>
+    <span id="drive-filter-summary" class="filter-summary"></span>
+  </div>
 </div>
 
-<main id="drive-list">
+<main id="drive-list" class="drive-list">
   {% if drives|length == 0 %}
     <div class="empty-state">
       <div class="big">No drives indexed yet.</div>
@@ -1031,7 +1213,16 @@
 
   {% macro node_meta(node) %}
     {% if node.backup_state %}{{ backup_badge(node) }}{% endif %}
+    {% if node.hints %}{{ hint_badge(node) }}{% endif %}
     {{ tag_editor(node) }}
+  {% endmacro %}
+
+  {# A wrench on a title whose folder layout is out of date. Advisory only:
+     nothing is wrong with the files, they are just stored in a way that hides
+     them from backup matching and tags. #}
+  {% macro hint_badge(node) %}
+    <button class="hint-btn" title="{{ node.hint_detail }}"
+            aria-label="Folder layout worth tidying">🔧</button>
   {% endmacro %}
 
   {# Shield on titles that exist somewhere else. Green when at least one copy
@@ -1126,7 +1317,7 @@
              data-depth="{{ node.depth }}"
              data-node-id="{{ node.id }}"
              {% if needs_lazy %}data-lazy="1"{% endif %}
-             {% if node.depth == 2 %}data-tags="{{ node.tags|join('|') }}" data-backup="{{ node.backup_state or '' }}"{% endif %}
+             {% if node.depth == 2 %}data-tags="{{ node.tags|join('|') }}" data-backup="{{ node.backup_state or '' }}" data-hints="{{ node.hints|join('|') }}"{% endif %}
              ontoggle="onNodeToggle(this)">
       <summary>
         <span class="name-wrap">
@@ -1147,7 +1338,7 @@
       </div>
     </details>
     {% else %}
-    <div class="node file-node" data-depth="{{ node.depth }}" data-node-id="{{ node.id }}" {% if node.depth == 2 %}data-tags="{{ node.tags|join('|') }}" data-backup="{{ node.backup_state or '' }}"{% endif %}>
+    <div class="node file-node" data-depth="{{ node.depth }}" data-node-id="{{ node.id }}" {% if node.depth == 2 %}data-tags="{{ node.tags|join('|') }}" data-backup="{{ node.backup_state or '' }}" data-hints="{{ node.hints|join('|') }}"{% endif %}>
       {% if node.depth == 2 %}{{ select_box(node) }}{% endif %}
       <span class="name" title="{{ node.name }}">{{ node.name }}</span>
       {% if node.depth == 2 %}{{ node_meta(node) }}{% endif %}
@@ -1159,7 +1350,14 @@
   {% endmacro %}
 
   {% for d in drives %}
-  <div class="drive" data-drive-index="{{ loop.index }}" data-drive-id="{{ d.drive_id }}">
+  <div class="drive" data-drive-index="{{ loop.index }}" data-drive-id="{{ d.drive_id }}"
+       data-type="{{ d.drive_type }}"
+       data-connected="{{ 1 if d.connected else 0 }}"
+       data-label="{{ d.label|lower }}"
+       data-free="{{ d.free_bytes or 0 }}"
+       data-freepct="{{ d.space.free_pct }}"
+       data-used="{{ d.pct_used }}"
+       data-size="{{ d.total_bytes or 0 }}">
     <div class="drive-head">
       <div class="drive-top-row">
         <div>
@@ -1209,17 +1407,22 @@
       {% endif %}
       <div class="drive-settings">
         <span class="ds-label">Treat as</span>
-        {% for value, text in [('ssd', 'SSD'), ('hdd', 'HDD'), ('usb', 'USB')] %}
+        {% for value, text in drive_types %}
           <button class="ds-chip {{ 'active' if d.drive_type == value else '' }}"
                   data-drive-id="{{ d.drive_id }}" data-type="{{ value }}">{{ text }}</button>
         {% endfor %}
         <button class="ds-chip {{ 'active' if not d.type_is_manual else '' }}"
                 data-drive-id="{{ d.drive_id }}" data-type=""
-                title="Work it out from the volume label">Auto</button>
+                title="Work it out from the volume label and the bus">Auto</button>
         <span class="ds-sep"></span>
-        <label class="ds-toggle" title="Kept full on purpose, read only. Turns off the low space warning.">
+        {# Refused on cards and sticks: filling one and leaving it unplugged
+           is exactly what loses the data. #}
+        <label class="ds-toggle"
+               title="{{ 'Kept full on purpose, read only. Turns off the low space warning.' if d.allows_cold else 'Not available on a card or a stick. Unpowered flash has no stated retention and fails all at once, so filling one and leaving it in a drawer is what loses the data.' }}"
+               style="{{ '' if d.allows_cold else 'opacity:0.45; cursor:not-allowed;' }}">
           <input type="checkbox" class="cold-toggle" data-drive-id="{{ d.drive_id }}"
-                 {{ 'checked' if d.cold_storage else '' }}>
+                 {{ 'checked' if d.cold_storage else '' }}
+                 {{ '' if d.allows_cold else 'disabled' }}>
           Cold storage
         </label>
       </div>
@@ -2299,6 +2502,9 @@ document.getElementById('suggest-backdrop').addEventListener('click', function(e
 
 async function loadSuggestions(){
   const body = document.getElementById('sugg-body');
+  // Anything already ticked is put back afterwards, so tagging a title from
+  // in here does not quietly throw away the rest of the selection.
+  const wasTicked = new Set(checkedSuggestions().map(c => c.dataset.nodeId));
   body.innerHTML = '<div class="sugg-empty">Working out what is worth moving…</div>';
   const recent = document.getElementById('sugg-include-recent').checked ? '1' : '0';
   try{
@@ -2308,6 +2514,10 @@ async function loadSuggestions(){
     return;
   }
   renderSuggestions();
+  document.querySelectorAll('.sugg-check').forEach(box => {
+    if(wasTicked.has(box.dataset.nodeId)) box.checked = true;
+  });
+  updateSuggestionSummary();
 }
 
 const SUGG_TITLES = {
@@ -2385,11 +2595,12 @@ function buildSuggestionItem(group, candidate){
 
   const name = document.createElement('div');
   name.className = 'sugg-name';
-  name.textContent = candidate.name;
+  const label = document.createElement('span');
+  label.textContent = candidate.name;
   const size = document.createElement('span');
   size.className = 'sugg-size';
-  size.textContent = '  ' + candidate.size_h;
-  name.appendChild(size);
+  size.textContent = candidate.size_h;
+  name.append(label, size, buildSuggestionTags(candidate));
 
   const why = document.createElement('div');
   why.className = 'sugg-why';
@@ -2411,6 +2622,7 @@ function buildSuggestionItem(group, candidate){
   select.addEventListener('change', () => {
     const chosen = candidate.targets.find(t => t.drive_id === select.value);
     targetWhy.textContent = chosen ? chosen.why : '';
+    updateSpareWarning(chosen, spare);
   });
   arrow.appendChild(select);
 
@@ -2419,7 +2631,13 @@ function buildSuggestionItem(group, candidate){
   const first = candidate.targets.find(t => t.drive_id === candidate.suggested_target);
   targetWhy.textContent = first ? first.why : '';
 
-  right.append(name, why, arrow, targetWhy);
+  // A card or a stick is a spare copy, never protection, so picking one has
+  // to say so rather than leaving the title looking covered.
+  const spare = document.createElement('div');
+  spare.className = 'sugg-spare';
+  updateSpareWarning(first, spare);
+
+  right.append(name, why, arrow, targetWhy, spare);
 
   // Drives that would suit but are not plugged in.
   if((candidate.offline_targets || []).length){
@@ -2435,6 +2653,77 @@ function buildSuggestionItem(group, candidate){
   row.selectEl = select;
   box.selectEl = select;
   return row;
+}
+
+function updateSpareWarning(target, el){
+  const spare = target && target.counts_as_protection === false;
+  el.style.display = spare ? '' : 'none';
+  el.textContent = spare
+    ? 'A copy here is a spare, not protection. This title will still show as '
+      + 'having nowhere else to live.'
+    : '';
+}
+
+/* Star and Watching, inline on every proposal. Both change what the engine
+   would say, so toggling one re-runs it rather than leaving a stale list:
+   starring a title can add a backup proposal for it, and marking one as
+   being watched removes it from the moves entirely. */
+const SUGG_TAGS = [
+  {tag: {{ star_tag|tojson }}, cls: 'star', symbol: '★', field: 'starred',
+   on: 'Starred: worth protecting', off: 'Star this, to mark it worth protecting'},
+  {tag: {{ watching_tag|tojson }}, cls: 'watching', symbol: '▶', field: 'watching',
+   on: 'Watching: never suggested for a move', off: 'Mark as watching, so it is never moved'},
+];
+
+function buildSuggestionTags(candidate){
+  const box = document.createElement('span');
+  box.className = 'sugg-tags';
+
+  SUGG_TAGS.forEach(spec => {
+    const on = !!candidate[spec.field];
+    const button = document.createElement('button');
+    button.className = 'sys-tag ' + spec.cls + (on ? ' on' : '');
+    button.textContent = spec.symbol;
+    button.title = on ? spec.on : spec.off;
+    button.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      toggleSuggestionTag(candidate, spec, !on);
+    });
+    box.appendChild(button);
+  });
+  return box;
+}
+
+function toggleSuggestionTag(candidate, spec, turningOn){
+  const body = document.getElementById('sugg-body');
+  body.classList.add('recalc');
+  postTag(candidate.drive_id, candidate.rel_path, spec.tag,
+          turningOn ? 'add' : 'remove',
+          () => {
+            // The tree behind the dialog holds the same title, so keep it in
+            // step rather than making a reload the only way to see the change.
+            syncTreeTag(candidate, spec.tag, turningOn);
+            loadSuggestions();
+          });
+  // A failed tag leaves the list as it was, so lift the veil either way.
+  setTimeout(() => body.classList.remove('recalc'), 4000);
+}
+
+/* Mirror a tag change from the suggestions panel onto the tree underneath. */
+function syncTreeTag(candidate, tag, turningOn){
+  const wrap = document.querySelector(
+    `.tags-inline[data-drive-id="${CSS.escape(candidate.drive_id)}"]`
+    + `[data-rel-path="${CSS.escape(candidate.rel_path)}"]`);
+  if(!wrap) return;
+  const toggle = wrap.querySelector(`.sys-tag[data-tag="${CSS.escape(tag)}"]`);
+  if(toggle) toggle.classList.toggle('on', turningOn);
+  const node = wrap.closest('.dir-node') || wrap.closest('.file-node');
+  if(node){
+    const tags = new Set((node.dataset.tags || '').split('|').filter(Boolean));
+    if(turningOn) tags.add(tag); else tags.delete(tag);
+    node.dataset.tags = [...tags].join('|');
+  }
 }
 
 function buildSpreadPanel(spread){
@@ -2486,46 +2775,52 @@ function updateSuggestionSummary(){
   const parts = [];
   if(moves) parts.push(`${moves} move(s)`);
   if(copies) parts.push(`${copies} backup(s)`);
+
+  const groups = groupSuggestions(checked).length;
   summary.textContent = parts.join(' and ')
-    + '. These run one destination at a time, so a batch spanning several '
-    + 'drives is done in several passes.';
+    + (groups > 1
+        ? `, across ${groups} destinations. They are queued and run one after `
+          + `another, so this is one job you can leave alone.`
+        : '. Nothing happens until you press the button.');
 }
 
-/* Only one job runs at a time, so the ticked items are grouped by
-   destination and operation, and the first group is started. The rest are
-   reported so it is clear what is left. */
-function runSuggestions(){
-  const checked = checkedSuggestions();
-  if(checked.length === 0) return;
-
+/* Ticked items grouped into one batch per destination and operation. Order
+   is the order they were ticked in, which is the order they will run. */
+function groupSuggestions(checked){
   const batches = new Map();
   checked.forEach(box => {
     const target = box.selectEl.value;
     const key = box.dataset.operation + '|' + target;
-    if(!batches.has(key)) batches.set(key, {operation: box.dataset.operation,
-                                           target: target, ids: []});
-    batches.get(key).ids.push(Number(box.dataset.nodeId));
+    if(!batches.has(key)){
+      batches.set(key, {operation: box.dataset.operation,
+                        target_drive_id: target, node_ids: []});
+    }
+    batches.get(key).node_ids.push(Number(box.dataset.nodeId));
   });
+  return [...batches.values()];
+}
 
-  const groups = [...batches.values()];
-  const first = groups[0];
-  const remaining = groups.length - 1;
+/* The whole selection goes to the server as one job, however many drives it
+   spans, and the server runs the batches in order. */
+function runSuggestions(){
+  const checked = checkedSuggestions();
+  if(checked.length === 0) return;
 
+  const batches = groupSuggestions(checked);
   const button = document.getElementById('sugg-go');
   button.disabled = true;
   button.textContent = 'Starting…';
 
-  postJSON('/api/move', {node_ids: first.ids, target_drive_id: first.target,
-                         operation: first.operation},
+  postJSON('/api/move', {batches: batches},
     (data) => {
       button.textContent = 'Do the ticked ones';
       closeSuggestions();
       showMovePanel();
       renderMoveJob(data.job);
       pollMove();
-      if(remaining){
-        flashToast(`Started ${first.ids.length}. ${remaining} more group(s) go to `
-                 + `different drives, so run them after this finishes.`);
+      if(batches.length > 1){
+        flashToast(`Queued ${data.job.total} title(s) across `
+                 + `${data.job.targets.length} drives.`);
       }
     },
     () => { button.disabled = false; button.textContent = 'Do the ticked ones'; });
@@ -3120,7 +3415,10 @@ function renderMoveJob(job){
     st.className = 'st ' + item.status;
     st.textContent = MOVE_ICONS[item.status] || '·';
     const name = document.createElement('span');
-    name.textContent = item.name;
+    // A job can span several drives, so each row says where it is going.
+    name.textContent = job.targets && job.targets.length > 1
+      ? `${item.name}  →  ${item.target_label}`
+      : item.name;
     const detail = document.createElement('span');
     detail.className = 'detail';
     detail.textContent = item.detail || item.status;
@@ -3372,10 +3670,20 @@ async function postJSON(url, body, onSuccess, onFailure){
 let searchTimer = null;
 function onSearchInput(){
   clearTimeout(searchTimer);
-  const q = document.getElementById('search').value.trim();
+  const input = document.getElementById('search');
+  const q = input.value.trim();
+  // The clear button only exists while there is something to clear.
+  document.getElementById('search-wrap').classList.toggle('filled', input.value.length > 0);
   const box = document.getElementById('search-results');
   if(!q){ box.classList.remove('show'); box.innerHTML=''; return; }
   searchTimer = setTimeout(() => runSearch(q), 200);
+}
+
+function clearSearch(){
+  const input = document.getElementById('search');
+  input.value = '';
+  onSearchInput();
+  input.focus();
 }
 async function runSearch(q){
   const box = document.getElementById('search-results');
@@ -3551,11 +3859,107 @@ function escapeHtml(s){
   return d.innerHTML;
 }
 
+/* ---------- drive view ----------
+   Two layouts, remembered per browser. Grid only affects shut cards; an open
+   one spans the full width either way, so browsing behaves the same. */
+function setDriveView(view){
+  const list = document.getElementById('drive-list');
+  list.classList.toggle('grid', view === 'grid');
+  document.getElementById('view-grid').classList.toggle('on', view === 'grid');
+  document.getElementById('view-list').classList.toggle('on', view !== 'grid');
+  try{ localStorage.setItem('mv-drive-view', view); } catch(e){ /* private mode */ }
+}
+
+function restoreDriveView(){
+  let view = 'list';
+  try{ view = localStorage.getItem('mv-drive-view') || 'list'; } catch(e){ /* ignore */ }
+  setDriveView(view);
+}
+window.addEventListener('DOMContentLoaded', restoreDriveView);
+
+/* ---------- alert pills ---------- */
+document.addEventListener('click', function(e){
+  const pill = e.target.closest('.alert-pill');
+  if(!pill) return;
+  const detail = document.getElementById('alert-' + pill.dataset.alert);
+  if(!detail) return;
+  const showing = detail.classList.toggle('show');
+  pill.querySelector('.caret').textContent = showing ? '▴' : '▾';
+});
+
+/* ---------- drive filtering and sorting ----------
+   Separate from the title filters below: these hide or reorder whole cards
+   rather than rows inside them. */
+let activeTypeFilters = new Set();
+let connectedOnly = false;
+
+function toggleTypeFilter(el){
+  const t = el.dataset.type;
+  if(activeTypeFilters.has(t)){ activeTypeFilters.delete(t); el.classList.remove('active'); }
+  else { activeTypeFilters.add(t); el.classList.add('active'); }
+  applyDriveFilters();
+}
+
+function toggleConnectedFilter(el){
+  connectedOnly = !connectedOnly;
+  el.classList.toggle('active', connectedOnly);
+  applyDriveFilters();
+}
+
+function applyDriveFilters(){
+  const drives = [...document.querySelectorAll('.drive')];
+  let shown = 0;
+  drives.forEach(d => {
+    const typeOk = activeTypeFilters.size === 0 || activeTypeFilters.has(d.dataset.type);
+    const connOk = !connectedOnly || d.dataset.connected === '1';
+    // A class, not an inline style: the title filters hide whole drives too,
+    // via .filtered-out, and the two must not overwrite each other.
+    const match = typeOk && connOk;
+    d.classList.toggle('drive-hidden', !match);
+    if(match) shown++;
+  });
+  const summary = document.getElementById('drive-filter-summary');
+  const filtering = activeTypeFilters.size > 0 || connectedOnly;
+  summary.textContent = filtering ? `${shown} of ${drives.length} drives` : '';
+}
+
+/* Sorting reorders the actual nodes, so it survives every other operation
+   that looks things up by selector. */
+const DRIVE_SORTS = {
+  label:   (a, b) => a.dataset.label.localeCompare(b.dataset.label),
+  free:    (a, b) => Number(b.dataset.free) - Number(a.dataset.free),
+  freepct: (a, b) => Number(b.dataset.freepct) - Number(a.dataset.freepct),
+  used:    (a, b) => Number(b.dataset.used) - Number(a.dataset.used),
+  size:    (a, b) => Number(b.dataset.size) - Number(a.dataset.size),
+  type:    (a, b) => (a.dataset.type || '').localeCompare(b.dataset.type || '')
+                     || a.dataset.label.localeCompare(b.dataset.label),
+};
+
+function applyDriveSort(){
+  const select = document.getElementById('drive-sort');
+  const how = select.value;
+  const list = document.getElementById('drive-list');
+  const drives = [...list.querySelectorAll('.drive')];
+  drives.sort(DRIVE_SORTS[how] || DRIVE_SORTS.label);
+  drives.forEach(d => list.appendChild(d));
+  try{ localStorage.setItem('mv-drive-sort', how); } catch(e){ /* private mode */ }
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+  let how = null;
+  try{ how = localStorage.getItem('mv-drive-sort'); } catch(e){ /* ignore */ }
+  if(how && DRIVE_SORTS[how]){
+    document.getElementById('drive-sort').value = how;
+    applyDriveSort();
+  }
+});
+
 /* ---------- filters ----------
-   Two independent dimensions, combined with AND: backup state (the shield
-   icons) and tags. Within each dimension, several selections mean OR. */
+   Independent dimensions combined with AND: backup state, layout hints and
+   tags. Within each dimension, several selections mean OR. */
 let activeTagFilters = new Set();
 let activeStateFilters = new Set();
+let hintFilter = false;
 
 function toggleTagFilter(el){
   const t = el.dataset.tag;
@@ -3571,10 +3975,20 @@ function toggleStateFilter(el){
   applyFilters();
 }
 
+function toggleHintFilter(el){
+  hintFilter = !hintFilter;
+  el.classList.toggle('active', hintFilter);
+  applyFilters();
+}
+
 function clearAllFilters(){
   activeTagFilters.clear();
   activeStateFilters.clear();
+  activeTypeFilters.clear();
+  hintFilter = false;
+  connectedOnly = false;
   document.querySelectorAll('.filter-chip.active').forEach(el => el.classList.remove('active'));
+  applyDriveFilters();
   applyFilters();
 }
 
@@ -3585,7 +3999,7 @@ function filterableNodes(){
 
 function applyFilters(){
   const nodes = filterableNodes();
-  const filtering = activeTagFilters.size > 0 || activeStateFilters.size > 0;
+  const filtering = activeTagFilters.size > 0 || activeStateFilters.size > 0 || hintFilter;
   let shown = 0;
 
   nodes.forEach(n => {
@@ -3598,7 +4012,9 @@ function applyFilters(){
     const tags = (n.dataset.tags || '').split('|').filter(Boolean);
     const tagOk = activeTagFilters.size === 0 || tags.some(t => activeTagFilters.has(t));
 
-    const match = stateOk && tagOk;
+    const hintOk = !hintFilter || (n.dataset.hints || '') !== '';
+
+    const match = stateOk && tagOk && hintOk;
     n.style.display = match ? '' : 'none';
     if(match){
       shown++;

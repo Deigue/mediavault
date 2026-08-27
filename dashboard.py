@@ -1,12 +1,11 @@
 """
-dashboard.py - Local web dashboard for MediaVault.
+dashboard.py - the Flask app and every HTTP endpoint.
 
-Run: py dashboard.py
-Then open http://127.0.0.1:5151 in your browser.
+    py dashboard.py            then open http://127.0.0.1:5151
+    py dashboard.py --dev      auto-reloading second copy on 5152
 
-Reads mediavault.db (written by scanner.py) and renders one page showing
-every known drive, its capacity, a drill-down tree of everything on it,
-tags, and duplicate/redundancy indicators.
+Renders one page from mediavault.db: every drive, its capacity, a drill-down
+tree, tags, and backup indicators.
 """
 
 import os
@@ -23,22 +22,18 @@ import moveops
 import movejob
 import scanner
 import scanjob
+import structure
 import suggestions
 import tagging
 
 app = Flask(__name__)
-# Without this Jinja compiles the template once at first request and caches it,
-# so edits to dashboard.html only appear after restarting the server. The cost
-# is one stat() per render, which is nothing next to the DB work.
+# Otherwise Jinja caches the compiled template and edits to dashboard.html
+# need a restart. Costs one stat() per render, nothing beside the DB work.
 app.config["TEMPLATES_AUTO_RELOAD"] = True
-
-# Per-type thresholds live in drivetypes.py, since the right fill level
-# depends on whether a drive is an SSD, a mechanical disk, or removable.
 
 
 def human(n_bytes):
-    """Picks whichever unit makes the number easiest to read - a 300MB file
-    shows as '312.4 MB', not '0.3 GB'."""
+    """Whichever unit reads best, so 300MB shows as '312.4 MB', not '0.3 GB'."""
     if n_bytes is None:
         return "-"
     n = float(n_bytes)
@@ -48,22 +43,17 @@ def human(n_bytes):
     return f"{int(n)} B"
 
 
-# Tag that marks a title you have deliberately only backed up part of, so it
-# shows as covered rather than nagging you about the missing pieces.
+# Marks a title deliberately only part backed up, so it stops nagging.
 PARTIAL_OK_TAG = "partial-ok"
 
 
 def backup_state(duplicates, tags):
     """
-    'full', 'partial', 'split', or None for a title with nothing elsewhere.
+    'full', 'partial', 'split', or None when nothing exists elsewhere.
 
-    A title counts as fully backed up if any single copy is complete. A
-    partial copy is usually a deliberate choice, so tagging the title
-    `partial-ok` promotes it to full.
-
-    'split' means the other location shares nothing with this one: the same
-    title broken across drives rather than copied. That is not protection,
-    so it never counts as backed up regardless of tags.
+    Full means any single copy is complete, or the title is tagged
+    partial-ok. Split means the other location shares nothing with this one,
+    which is not protection and so never counts however it is tagged.
     """
     if not duplicates:
         return None
@@ -78,34 +68,34 @@ def backup_state(duplicates, tags):
     return "partial"
 
 
-def annotate_tree(nodes, drive_total_bytes, drive_id, tags_by_path, dup_map):
-    """Adds display fields recursively: size_h, pct_of_drive, tags, duplicate info."""
+def annotate_tree(nodes, drive_total_bytes, drive_id, tags_by_path, dup_map, hints):
+    """Adds display fields recursively: size_h, pct_of_drive, tags, duplicate
+    info, layout hints."""
     for n in nodes:
         n["size_h"] = human(n["size_bytes"])
         n["pct_of_drive"] = round(100 * n["size_bytes"] / drive_total_bytes, 2) if drive_total_bytes else 0
         n["drive_id"] = drive_id
-        # Tags and duplicate info apply to depth-2 items
+        # Tags, duplicates and hints all apply at title level.
         if n["depth"] == 2:
             n["tags"] = tags_by_path.get(n["rel_path"], [])
             n["duplicates"] = dup_map.get(n["id"], []) if n["is_dir"] else []
             n["backup_state"] = backup_state(n["duplicates"], n["tags"])
+            n["hints"] = hints.get(n["id"], [])
+            n["hint_detail"] = structure.describe(n["hints"])
         else:
             n["tags"] = []
             n["duplicates"] = []
             n["backup_state"] = None
-        annotate_tree(n["children"], drive_total_bytes, drive_id, tags_by_path, dup_map)
+            n["hints"] = []
+            n["hint_detail"] = ""
+        annotate_tree(n["children"], drive_total_bytes, drive_id, tags_by_path,
+                      dup_map, hints)
 
 
 @app.route("/api/children")
 def api_children():
-    """
-    One level of a folder's contents, for lazy expansion of the tree.
-
-    Only depths 0-2 are rendered into the initial page (that's where tags,
-    duplicate badges and filtering live, and it's a small fraction of the
-    nodes). Everything deeper - seasons, episodes, individual files - is
-    fetched from here the first time its parent folder is opened.
-    """
+    """One level of a folder's contents, for lazy expansion. Depths 0-2 are
+    rendered into the page; anything deeper is fetched from here."""
     try:
         parent_id = int(request.args.get("parent_id", ""))
     except ValueError:
@@ -132,6 +122,7 @@ def home():
     drives = db.get_all_drives()
     dup_map = db.get_duplicate_map()
     connected = scanner.get_connected_drives()
+    hint_conn = db.get_conn()
 
     for d in drives:
         # Where this drive is right now, rather than where it was last scanned.
@@ -148,14 +139,14 @@ def home():
         d["pct_used"] = round(100 * used / total, 1)
 
         d["drive_type"] = drivetypes.detect(
-            label=d["label"], removable=False, stored=d.get("drive_type")
+            label=d["label"], removable=False, stored=d.get("drive_type"),
+            bus_type=d["bus_type"],
         )
-        # A stored value means someone set it by hand, rather than it being
-        # read off the volume label.
-        d["type_is_manual"] = d.get("drive_type") in (
-            drivetypes.SSD, drivetypes.HDD, drivetypes.USB)
+        # A stored value was set by hand rather than read off the label.
+        d["type_is_manual"] = d.get("drive_type") in drivetypes.ALL_TYPES
         d["type_label"] = drivetypes.rule_for(d["drive_type"])["label"]
         d["cold_storage"] = bool(d.get("cold_storage"))
+        d["allows_cold"] = drivetypes.allows_cold_storage(d["drive_type"])
         space = drivetypes.evaluate(d["drive_type"], free, total, d["cold_storage"])
         d["space"] = space
         d["low_space"] = space["low"]
@@ -165,9 +156,11 @@ def home():
         d["segments_filled"] = round(40 * used / total)
 
         tags_by_path = db.get_tags_for_drive(d["drive_id"])
+        hints = structure.hints_for_drive(d["drive_id"], hint_conn)
         tree = db.get_tree_for_drive(d["drive_id"])
-        annotate_tree(tree, total, d["drive_id"], tags_by_path, dup_map)
+        annotate_tree(tree, total, d["drive_id"], tags_by_path, dup_map, hints)
         d["tree"] = tree
+        d["hint_count"] = len(hints)
 
         largest = db.get_largest_folders(d["drive_id"], limit=6)
         for lf in largest:
@@ -176,6 +169,8 @@ def home():
             lf["duplicates"] = dup_map.get(lf["id"], [])
             lf["backup_state"] = backup_state(lf["duplicates"], lf["tags"])
         d["largest_folders"] = largest
+
+    hint_conn.close()
 
     grand_total = sum(d["total_bytes"] or 0 for d in drives)
     grand_used = sum(d["used_bytes"] or 0 for d in drives)
@@ -191,6 +186,7 @@ def home():
         "used_h": human(grand_used),
         "free_h": human(grand_free),
         "pct_used": round(100 * grand_used / grand_total, 1) if grand_total else 0,
+        "hint_count": sum(d["hint_count"] for d in drives),
     }
 
     return render_template(
@@ -202,6 +198,9 @@ def home():
         system_tags=tagging.SYSTEM_TAGS,
         star_tag=tagging.STAR_TAG,
         watching_tag=tagging.WATCHING_TAG,
+        hint_meta=structure.HINTS,
+        # Only the types that can be chosen, in the order the chips show them.
+        drive_types=[(t, drivetypes.rule_for(t)["label"]) for t in drivetypes.ALL_TYPES],
     )
 
 
@@ -209,8 +208,7 @@ def home():
 def search():
     q = request.args.get("q", "").strip()
     results = db.search_nodes(q) if q else []
-    # Show the current drive letter next to the label for drives that are
-    # plugged in, so a result you can actually go and open is obvious.
+    # The live letter, so a result you can go and open right now is obvious.
     connected = scanner.get_connected_drives()
     for r in results:
         r["size_h"] = human(r["size_bytes"])
@@ -247,9 +245,8 @@ def api_tags():
 
 @app.route("/api/drive/label", methods=["POST"])
 def api_drive_label():
-    """Rename a drive. The drive_id is what everything is keyed on, so the
-    label is purely cosmetic and safe to change at any time - including
-    while the drive is disconnected."""
+    """Rename a drive. Everything is keyed on drive_id, so the label is
+    cosmetic and safe to change even while the drive is unplugged."""
     data = request.get_json(force=True)
     drive_id = data.get("drive_id")
     label = (data.get("label") or "").strip()
@@ -284,12 +281,8 @@ def api_tag_bulk():
 
 @app.route("/api/scan", methods=["POST"])
 def api_scan():
-    """
-    Start scanning every connected drive worth scanning.
-
-    Returns straight away with the job, which the page then polls. A scan of
-    a full drive takes minutes, so it cannot be done inside this request.
-    """
+    """Start scanning every connected drive worth scanning. Returns at once
+    with a job the page polls, since a full scan takes minutes."""
     job, problem = scanjob.start()
     if job is None:
         # 409: either a scan is already running, or there is nothing to scan.
@@ -340,12 +333,8 @@ def api_node_open():
 
 @app.route("/api/node/delete", methods=["POST"])
 def api_node_delete():
-    """
-    Delete the file or folder behind a node.
-
-    mode is 'bin' for the Recycle Bin, which is recoverable but does not free
-    space until the bin is emptied, or 'permanent' to remove it outright.
-    """
+    """Delete the file or folder behind a node. mode is 'bin', recoverable
+    but frees nothing until emptied, or 'permanent'."""
     data = request.get_json(force=True)
     try:
         node_id = int(data.get("node_id"))
@@ -370,42 +359,58 @@ def api_drive_type():
     """
     Set a drive's type by hand, and whether it is cold storage.
 
-    type of null goes back to reading it off the volume label.
+    A type of null goes back to reading it off the volume label.
     """
     data = request.get_json(force=True)
     drive_id = data.get("drive_id")
 
-    if not drive_id or db.get_drive(drive_id) is None:
+    drive = db.get_drive(drive_id) if drive_id else None
+    if drive is None:
         return jsonify({"ok": False, "error": "no such drive"}), 404
 
-    # Only touch what the request actually mentions. A missing key means
-    # "leave this alone", which is different from an explicit null meaning
-    # "go back to detecting it".
+    # Only touch what the request mentions. A missing key means leave it
+    # alone, which is different from an explicit null meaning detect it.
     if "drive_type" in data:
         drive_type = data["drive_type"]
-        if drive_type not in (None, drivetypes.SSD, drivetypes.HDD, drivetypes.USB):
-            return jsonify({"ok": False,
-                            "error": "drive_type must be ssd, hdd, usb or null"}), 400
+        if drive_type is not None and drive_type not in drivetypes.ALL_TYPES:
+            return jsonify({
+                "ok": False,
+                "error": "drive_type must be null or one of: "
+                         + ", ".join(drivetypes.ALL_TYPES),
+            }), 400
         db.set_drive_type(drive_id, drive_type)
+        # Changing to a card or a stick makes any existing cold storage flag
+        # meaningless, so clear it rather than leaving it stored but ignored.
+        if not drivetypes.allows_cold_storage(drive_type) and drive.get("cold_storage"):
+            db.set_drive_cold_storage(drive_id, False)
 
     if "cold_storage" in data:
+        effective = drivetypes.detect(
+            label=drive["label"],
+            stored=data.get("drive_type", drive.get("drive_type")),
+        )
+        if data["cold_storage"] and not drivetypes.allows_cold_storage(effective):
+            return jsonify({
+                "ok": False,
+                "error": "Cards and USB sticks cannot be cold storage. Unpowered "
+                         "flash has no stated retention and fails all at once, so "
+                         "filling one and leaving it in a drawer is exactly what "
+                         "loses the data.",
+            }), 400
         db.set_drive_cold_storage(drive_id, bool(data["cold_storage"]))
 
     return jsonify({"ok": True})
 
 
 def describe_target(d, mount, source_drive_id=None):
-    """
-    A drive as a move or backup target, with the facts that matter when
-    choosing one: how full it is, whether it is removable (so it can live
-    somewhere else), and whether it already holds real backups.
-    """
+    """A drive as a move or backup target: how full, whether it is removable,
+    and whether it already holds real backups."""
     drive_type = drivetypes.detect(label=d["label"], stored=d.get("drive_type"))
     space = drivetypes.evaluate(drive_type, d["free_bytes"], d["total_bytes"],
                                 bool(d.get("cold_storage")))
     redundancy = db.redundancy_summary(d["drive_id"])
-    # A drive that can be unplugged and stored elsewhere is the only kind of
-    # copy that survives losing the machine, so it is worth pointing out.
+    # A drive that can be stored elsewhere is the only copy that survives
+    # losing the machine, so it is worth pointing out.
     external = scanner.is_external(mount)
 
     return {
@@ -427,12 +432,8 @@ def describe_target(d, mount, source_drive_id=None):
 
 @app.route("/api/suggestions")
 def api_suggestions():
-    """
-    What is worth moving or backing up, and why.
-
-    Proposals only. Ticking one hands it to the existing move or backup
-    machinery, so nothing new touches files.
-    """
+    """What is worth moving or backing up, and why. Proposals only: ticking
+    one hands it to the existing move machinery."""
     include_recent = request.args.get("include_recent") == "1"
     try:
         recent_days = int(request.args.get("recent_days", suggestions.RECENT_DAYS))
@@ -458,10 +459,8 @@ def api_suggestions():
 
 @app.route("/api/move/targets")
 def api_move_targets():
-    """
-    Drives a selection could be moved to: connected, with a library folder,
-    and not the drive the titles are already on.
-    """
+    """Drives a selection could move to: connected, with a library folder,
+    and not the one the titles are already on."""
     exclude = request.args.get("exclude", "")
     connected = scanner.get_connected_drives(max_age=0)
 
@@ -478,11 +477,8 @@ def api_move_targets():
 
 @app.route("/api/copy/targets")
 def api_copy_targets():
-    """
-    Drives a backup copy could go to: any connected drive. Unlike a move,
-    the redundancy folder is created if it is missing, so a drive does not
-    need one already.
-    """
+    """Drives a backup could go to: any connected one. The redundancy folder
+    is created if missing, so a drive does not need one already."""
     connected = scanner.get_connected_drives(max_age=0)
     source = request.args.get("source", "")
 
@@ -497,16 +493,29 @@ def api_copy_targets():
 
 @app.route("/api/move", methods=["POST"])
 def api_move():
-    """Move the selected titles to another drive, or back them up to one."""
+    """
+    Move or back up titles.
+
+    Takes either one destination, or a `batches` list of them which run one
+    after another as a single job. That is what lets a set of suggestions
+    spanning several drives be ticked and started in one go.
+    """
     data = request.get_json(force=True)
-    target_drive_id = data.get("target_drive_id")
-    operation = data.get("operation", "move")
+
+    if "batches" in data:
+        batches = data.get("batches") or []
+    else:
+        batches = [{"node_ids": data.get("node_ids") or [],
+                    "target_drive_id": data.get("target_drive_id"),
+                    "operation": data.get("operation", "move")}]
+
     try:
-        node_ids = [int(i) for i in (data.get("node_ids") or [])]
+        for b in batches:
+            b["node_ids"] = [int(i) for i in (b.get("node_ids") or [])]
     except (TypeError, ValueError):
         return jsonify({"ok": False, "error": "node_ids must be integers"}), 400
 
-    job, problem = movejob.start(node_ids, target_drive_id, operation)
+    job, problem = movejob.start_batches(batches)
     if job is None:
         return jsonify({"ok": False, "error": problem}), 409
     return jsonify({"ok": True, "job": job})
@@ -519,8 +528,8 @@ def api_move_status():
 
 @app.route("/api/settings")
 def api_settings():
-    """Current settings, the copy programs found on this machine, and which
-    one will actually be used."""
+    """Current settings, the copy programs found here, and which one will
+    actually be used."""
     settings = config.load()
     tool, path, note = config.resolve_copy_tool(settings)
     return jsonify({
@@ -531,8 +540,8 @@ def api_settings():
         "effective_path": path,
         "note": note,
         "config_path": config.CONFIG_PATH,
-        # Whether the Backup button can do anything, so the settings panel
-        # can say so plainly instead of the button failing when pressed.
+        # So the panel can say up front whether Backup can do anything,
+        # rather than the button failing when pressed.
         "rclone_path": backup.rclone_path(),
     })
 
@@ -550,16 +559,14 @@ def api_settings_save():
         if path and not os.path.isfile(path):
             return jsonify({"ok": False, "error": f"No file at:\n{path}"}), 400
         settings["copy_tool_path"] = path
-        # Keep the TeraCopy specific setting in step, since it is what older
-        # config files use.
+        # Kept in step because older config files use this key.
         if settings["copy_tool"] == "teracopy" and path:
             settings["teracopy_path"] = path
     if "verify_after_copy" in data:
         settings["verify_after_copy"] = bool(data["verify_after_copy"])
     if "backup_target" in data:
-        # Not validated against the remote: that would mean a network round
-        # trip on every save, and rclone reports a bad target clearly enough
-        # when the backup actually runs.
+        # Not validated here: that is a network round trip per save, and
+        # rclone reports a bad target clearly enough when it runs.
         settings["backup_target"] = (data["backup_target"] or "").strip()
 
     saved = config.save(settings)
@@ -571,11 +578,9 @@ def api_settings_save():
 @app.route("/api/backup", methods=["POST"])
 def api_backup():
     """
-    Snapshot the database and upload it to the configured target.
-
-    Runs in the request rather than as a background job: the file is a couple
-    of megabytes, so this is a few seconds at worst, and a job would need a
-    dock entry and progress polling to say nothing more than "done".
+    Snapshot the database and upload it. In the request rather than a
+    background job: a couple of megabytes is a few seconds, and a job would
+    need a dock entry and polling to say nothing but "done".
     """
     try:
         summary = backup.run()
@@ -589,10 +594,9 @@ def api_settings_browse():
     """
     Open a real Windows file picker and return what was chosen.
 
-    A browser cannot give a page the full path of a chosen file, so the
-    dialog is opened by the server instead. That works here only because the
-    server is the same machine you are sitting at. It runs in its own
-    process, since a UI toolkit does not belong in a request thread.
+    A browser will not give a page a file's full path, so the server opens
+    the dialog instead, which works only because it is the same machine. In
+    its own process: a UI toolkit does not belong in a request thread.
     """
     if os.name != "nt":
         return jsonify({"ok": False, "error": "Only available on Windows."}), 400
@@ -622,12 +626,8 @@ def api_settings_browse():
 
 @app.route("/api/nodes/delete", methods=["POST"])
 def api_nodes_delete():
-    """
-    Delete several nodes in one go, for the multi-select bar.
-
-    Each is attempted on its own and reported separately, so one failure
-    (a drive unplugged partway, a file held open) does not hide the rest.
-    """
+    """Delete several nodes, each attempted and reported on its own so one
+    failure does not hide the rest."""
     data = request.get_json(force=True)
     mode = data.get("mode")
     if mode not in ("bin", "permanent"):
@@ -671,22 +671,19 @@ def api_setup_candidates():
     """
     include_network = request.args.get("network", "") in ("1", "true", "yes")
 
-    # Order matters: probing is what discovers an unresponsive drive, so the
-    # list is only accurate once the candidates have been gathered.
+    # Order matters: probing is what discovers an unresponsive drive, so this
+    # is only accurate once the candidates have been gathered.
     candidates = scanner.find_setup_candidates(include_network=include_network)
     stalled = scanner.unresponsive_roots()
 
-    # Named from the local redirector's table, so this costs nothing even
-    # with every host switched off.
     deferred = [] if include_network else scanner.deferred_network_roots()
 
     return jsonify({
         "ok": True,
         "candidates": candidates,
         "deferred": deferred,
-        # Drives that were checked, are mounted, and did not answer in time.
-        # Worth naming rather than leaving out: a drive plainly visible in
-        # Explorer that is simply absent here reads as a bug in MediaVault.
+        # Named rather than left out: a drive plainly visible in Explorer but
+        # absent here reads as a bug.
         "unresponsive": [{"root": r, "letter": scanner.drive_letter_for(r) or r}
                          for r in stalled],
     })
@@ -695,12 +692,9 @@ def api_setup_candidates():
 @app.route("/api/drive/scaffold", methods=["POST"])
 def api_drive_scaffold():
     """
-    Create the folder layout on a drive MediaVault already knows about.
-
-    This is the button shown inside a drive whose tree is empty, for example
-    after its library folders were deleted. Drives that are not in the
-    database at all go through /api/drives/setup instead, which works from a
-    root path since they have no id yet.
+    Create the folder layout on a drive already in the database, for the
+    button inside an empty drive. Drives with no id yet go through
+    /api/drives/setup, which works from a root path instead.
     """
     data = request.get_json(force=True)
     drive_id = data.get("drive_id")
@@ -732,13 +726,11 @@ def api_drive_scaffold():
 @app.route("/api/drives/setup", methods=["POST"])
 def api_drives_setup():
     """
-    Create the Videos/<category> layout on the chosen drives, then scan them
-    so they appear in the dashboard straight away.
+    Create the layout on the chosen drives, then scan them.
 
-    Takes drive root paths rather than ids, because a drive with no library
-    folder has never been scanned and so has no id in the database yet. Each
-    root is checked against the list of drives actually connected, so a
-    request cannot name an arbitrary path.
+    Takes root paths rather than ids, since a drive with no library folder
+    has never been scanned. Each root is checked against the drives actually
+    connected, so a request cannot name an arbitrary path.
     """
     data = request.get_json(force=True)
     roots = data.get("roots") or []
@@ -766,11 +758,8 @@ def api_drives_setup():
 
 @app.route("/api/drive/delete", methods=["POST"])
 def api_drive_delete():
-    """Forget a drive entirely - its capacity row and its whole indexed tree.
-
-    Only touches the database; nothing is deleted from the actual drive.
-    Rescanning the drive re-adds it (and its tags come back, since those are
-    keyed by drive_id + rel_path and are left in place here)."""
+    """Forget a drive entirely. Only touches the database, nothing on the
+    drive itself. Rescanning adds it back, but its tags are gone."""
     data = request.get_json(force=True)
     drive_id = data.get("drive_id")
 
@@ -783,21 +772,13 @@ def api_drive_delete():
     return jsonify({"ok": True})
 
 
-# Override with MEDIAVAULT_HOST / MEDIAVAULT_PORT, which is handy for running
-# a second copy while the usual one is already on 5151.
 HOST = os.environ.get("MEDIAVAULT_HOST", "127.0.0.1")
 
-# --dev (or MEDIAVAULT_DEV=1) swaps waitress for Flask's own server, which
-# watches the source and restarts itself whenever a file changes - so edits
-# show up on a refresh instead of after a restart. It also picks a different
-# default port, because the everyday copy started by the scheduled task is
-# already holding 5151 and two servers cannot share it. Leaving that copy
-# running is the point: the dev one is a second instance beside it, not a
-# replacement.
-#
-# The flag exists as well as the variable because setting one for a single
-# command is spelt differently in every shell, and getting it subtly wrong
-# just starts the ordinary server on the ordinary port with no complaint.
+# --dev swaps waitress for Flask's own reloading server on a different port,
+# so it runs beside the scheduled task rather than replacing it. The flag
+# exists as well as the variable because setting an env var for one command
+# is spelt differently in every shell, and getting it wrong silently starts
+# the ordinary server instead.
 DEV = ("--dev" in sys.argv
        or os.environ.get("MEDIAVAULT_DEV", "").strip().lower()
        in ("1", "true", "yes", "on"))
@@ -810,18 +791,14 @@ if __name__ == "__main__":
         print(f"MediaVault DEV on http://{HOST}:{PORT}  (auto-reloads on save)")
         print("The everyday copy is untouched - restart its scheduled task to "
               "pick these changes up for real.")
-        # debug=True brings the reloader and in-browser tracebacks, and makes
-        # Flask re-read templates too, so dashboard.html edits need no restart
-        # either. It binds localhost, which is what makes the debugger's
-        # code-execution console acceptable here.
+        # debug=True brings the reloader and in-browser tracebacks. It binds
+        # localhost, which is what makes the debugger's console acceptable.
         app.run(host=HOST, port=PORT, debug=True)
         raise SystemExit
 
-    # Waitress is a proper server meant to stay up for months, unlike Flask's
-    # built-in one, which is for development. It also gives a fixed pool of
-    # worker threads rather than a new thread per connection, which matters
-    # now that a scan can run in the background while you use the page.
-    # If it isn't installed, fall back so the app still starts.
+    # Waitress is meant to stay up for months, and gives a fixed thread pool
+    # rather than one per connection, which matters while a scan runs in the
+    # background. Fall back if it is not installed, so the app still starts.
     try:
         from waitress import serve
     except ImportError:

@@ -1,17 +1,16 @@
 """
 movejob.py - runs moves and backup copies in the background.
 
-Copying a title can take a long time, so the dashboard starts a job here and
-polls it, the same way scanning works. Only one job runs at a time.
+Copying a title takes a long time, so the dashboard starts a job here and
+polls it. One job at a time, but a job can span several destinations: ticking
+suggestions that go to different drives queues them into a single run rather
+than making you come back between each one.
 
-Two operations share this machinery:
+Each title is planned again immediately before it runs, because an earlier
+item in the same job has changed how much room is left on its target.
 
     move    to the target's library, then the source is deleted
     copy    to the target's redundancy folder, source left alone
-
-Each title is planned again immediately before it runs. Space on the target
-is checked per title, so a batch that runs out of room stops cleanly with the
-remaining titles untouched rather than half copied.
 """
 
 import threading
@@ -29,25 +28,37 @@ _current = None
 _last_finished = None
 
 
-def _new_job(plans, target_label, operation):
+def _verb_for(operation):
+    return "Moving" if operation == "move" else "Backing up"
+
+
+def _new_job(steps):
+    """steps are the planned transfers, in the order they will run."""
+    operations = {s["operation"] for s in steps}
+    single = operations.pop() if len(operations) == 1 else None
+    labels = list(dict.fromkeys(s["target_label"] for s in steps))
+
     return {
         "id": str(int(time.time() * 1000)),
-        "operation": operation,          # 'move' or 'copy'
-        "verb": "Moving" if operation == "move" else "Backing up",
+        "operation": single or "mixed",
+        "verb": _verb_for(single) if single else "Transferring",
         "status": "running",
         "started_at": time.time(),
         "finished_at": None,
-        "target_label": target_label,
-        "total": len(plans),
+        "target_label": labels[0] if len(labels) == 1 else f"{len(labels)} drives",
+        # What the whole run covers, so the panel can show the queue up front.
+        "targets": labels,
+        "total": len(steps),
         "completed": 0,
         "current": None,
         # Progress within the title being worked on, so a single large title
         # does not look frozen while its episodes copy.
         "current_progress": None,
         "items": [
-            {"name": p["name"], "category": p["category"],
-             "size_bytes": p["size_bytes"], "status": "waiting", "detail": None}
-            for p in plans
+            {"name": s["name"], "category": s["category"],
+             "size_bytes": s["size_bytes"], "operation": s["operation"],
+             "target_label": s["target_label"], "status": "waiting", "detail": None}
+            for s in steps
         ],
         "log": [],
         "moved": 0,
@@ -72,15 +83,17 @@ def _snapshot(job):
         return copy
 
 
-def _run(job, node_ids, target_drive_id, operation):
+def _run(job, steps):
     global _current, _last_finished
-    touched_drives = {target_drive_id}
-    moving = operation == "move"
+    touched_drives = {s["target_drive_id"] for s in steps}
     try:
-        for index, node_id in enumerate(node_ids):
+        for index, step in enumerate(steps):
+            moving = step["operation"] == "move"
             with _lock:
                 job["items"][index]["status"] = "moving"
                 job["current"] = job["items"][index]["name"]
+                job["target_label"] = step["target_label"]
+                job["verb"] = _verb_for(step["operation"])
                 job["current_progress"] = None
 
             def on_progress(files_done, files_total, bytes_done, bytes_total, _i=index):
@@ -95,13 +108,8 @@ def _run(job, node_ids, target_drive_id, operation):
                     )
 
             try:
-                # Re-plan now rather than trusting the plan made when the job
-                # was queued: an earlier item in this batch has changed how
-                # much room is left on the target.
-                if moving:
-                    plan = moveops.plan_move(node_id, target_drive_id)
-                else:
-                    plan = moveops.plan_redundancy_copy(node_id, target_drive_id)
+                planner = moveops.plan_move if moving else moveops.plan_redundancy_copy
+                plan = planner(step["node_id"], step["target_drive_id"])
                 touched_drives.add(plan["source_drive_id"])
 
                 runner = moveops.move_title if moving else moveops.copy_title
@@ -109,7 +117,8 @@ def _run(job, node_ids, target_drive_id, operation):
                 with _lock:
                     job["items"][index].update(
                         status="done",
-                        detail=("moved to " if moving else "backed up to ") + result["category"],
+                        detail=("moved to " if moving else "backed up to ")
+                               + f"{step['target_label']} / {result['category']}",
                     )
                     job["moved"] += 1
             except moveops.MoveError as e:
@@ -127,7 +136,7 @@ def _run(job, node_ids, target_drive_id, operation):
                 job["completed"] = index + 1
                 job["current_progress"] = None
 
-        # Sizes and free space on both ends are now out of date.
+        # Sizes and free space on every drive involved are now out of date.
         if job["moved"]:
             _log(job, "Rescanning affected drives...")
             for drive_id in touched_drives:
@@ -154,53 +163,77 @@ def _run(job, node_ids, target_drive_id, operation):
 
 
 def start(node_ids, target_drive_id, operation="move"):
-    """
-    Begin a move or a backup copy.
+    """One destination. Kept for the move and backup dialogs."""
+    return start_batches([{"node_ids": node_ids,
+                           "target_drive_id": target_drive_id,
+                           "operation": operation}])
 
-    Returns (job_snapshot, None) or (None, reason). Every title is planned up
-    front so obvious problems are reported before anything is copied, rather
-    than failing partway through.
+
+def start_batches(batches):
+    """
+    Begin a run covering one or more destinations, in the order given.
+
+    Every title is planned up front so obvious problems are reported before
+    anything is copied. A batch whose titles all fail is skipped and said so;
+    the run only refuses outright if nothing at all can be done.
+
+    Returns (job_snapshot, None) or (None, reason).
     """
     global _current
-
-    if operation not in ("move", "copy"):
-        return None, "Unknown operation."
 
     with _lock:
         if _current is not None:
             return None, "Another move or copy is already running."
 
-    if not node_ids:
+    if not batches:
         return None, "Nothing selected."
 
-    target = db.get_drive(target_drive_id)
-    if target is None:
-        return None, "No such target drive."
+    steps, problems = [], []
+    for batch in batches:
+        operation = batch.get("operation", "move")
+        if operation not in ("move", "copy"):
+            return None, f"Unknown operation: {operation}"
 
-    planner = moveops.plan_move if operation == "move" else moveops.plan_redundancy_copy
-    plans, problems = [], []
-    for node_id in node_ids:
-        try:
-            plans.append(planner(node_id, target_drive_id))
-        except moveops.MoveError as e:
-            problems.append(str(e))
+        target_drive_id = batch.get("target_drive_id")
+        target = db.get_drive(target_drive_id)
+        if target is None:
+            problems.append(f"No such target drive: {target_drive_id}")
+            continue
 
-    if not plans:
+        planner = moveops.plan_move if operation == "move" else moveops.plan_redundancy_copy
+        for node_id in batch.get("node_ids") or []:
+            try:
+                plan = planner(node_id, target_drive_id)
+            except moveops.MoveError as e:
+                problems.append(str(e))
+                continue
+            steps.append({
+                "node_id": node_id,
+                "name": plan["name"],
+                "category": plan["category"],
+                "size_bytes": plan["size_bytes"],
+                "operation": operation,
+                "target_drive_id": target_drive_id,
+                "target_label": target["label"],
+            })
+
+    if not steps:
         return None, "Nothing can be done.\n\n" + "\n".join(problems)
 
-    job = _new_job(plans, target["label"], operation)
-    if problems:
-        for p in problems:
-            _log(job, "Skipped: " + p)
+    job = _new_job(steps)
+    for p in problems:
+        _log(job, "Skipped: " + p)
 
     with _lock:
         _current = job
-    verb = "Moving" if operation == "move" else "Backing up"
-    _log(job, f"{verb} {len(plans)} title(s) to {target['label']}.")
 
-    thread = threading.Thread(target=_run,
-                              args=(job, [p["node_id"] for p in plans],
-                                    target_drive_id, operation),
+    if len(job["targets"]) == 1:
+        _log(job, f"{job['verb']} {len(steps)} title(s) to {job['targets'][0]}.")
+    else:
+        _log(job, f"{len(steps)} title(s) across {len(job['targets'])} drives, "
+                  f"one after another: {', '.join(job['targets'])}.")
+
+    thread = threading.Thread(target=_run, args=(job, steps),
                               name="mediavault-move", daemon=True)
     thread.start()
     return _snapshot(job), None
