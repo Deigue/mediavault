@@ -53,18 +53,32 @@
   h1{ font-size:24px; font-weight:700; margin:0 0 3px; letter-spacing:-0.01em; }
   .sub{ color:var(--text-dim); font-size:12.5px; }
 
+  /* The gauge takes the first column on both rows; everything after it is an
+     equal share, so the second row's cells line up under the first row's. */
   .overview{
-    flex:1 1 520px; min-width:0;
-    display:grid; grid-template-columns: 1.5fr repeat(4, 1fr); gap:1px;
+    flex:1 1 560px; min-width:0;
+    display:grid; grid-template-columns: 1.5fr repeat(5, minmax(0, 1fr)); gap:1px;
     background:var(--line); border:1px solid var(--line); border-radius:10px; overflow:hidden;
   }
-  .overview .cell{ background:var(--panel); padding:10px 14px; }
+  .overview .cell{ background:var(--panel); padding:9px 13px; min-width:0; }
   .overview .cell .label{
-    font-family:'IBM Plex Mono', 'Cascadia Mono', Consolas, monospace; font-size:10px; letter-spacing:0.08em;
-    text-transform:uppercase; color:var(--text-faint); margin-bottom:4px;
+    font-family:'IBM Plex Mono', 'Cascadia Mono', Consolas, monospace; font-size:9.5px;
+    letter-spacing:0.07em; text-transform:uppercase; color:var(--text-faint);
+    margin-bottom:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
   }
-  .overview .cell .value{ font-family:'IBM Plex Mono', 'Cascadia Mono', Consolas, monospace; font-size:17px; font-weight:600; }
-  .overview .gauge-cell{ display:flex; flex-direction:column; justify-content:center; }
+  .overview .cell .value{
+    font-family:'IBM Plex Mono', 'Cascadia Mono', Consolas, monospace;
+    font-size:16px; font-weight:600; line-height:1.2;
+  }
+  .overview .cell .value.dim{ color:var(--text-dim); }
+  .overview .cell-sub{
+    font-family:'IBM Plex Mono', 'Cascadia Mono', Consolas, monospace;
+    font-size:10px; color:var(--text-faint); margin-top:2px;
+  }
+  /* Starts the second row under the gauge, so the title figures sit in their
+     own band rather than wrapping into whatever space is left. */
+  .overview .cell.span-first{ grid-column:1; }
+  .overview .gauge-cell{ display:flex; flex-direction:column; justify-content:center; grid-row:1; }
 
   .gauge{ display:flex; gap:2px; height:16px; margin-top:4px; }
   .gauge .seg{ flex:1; background:var(--seg-empty); border-radius:1px; }
@@ -478,8 +492,10 @@
      change what it proposes. */
   .sugg-tags{ display:inline-flex; gap:5px; flex-shrink:0; }
   .sugg-tags .sys-tag{ font-size:10.5px; padding:0 6px; }
-  .sugg-body.recalc{ opacity:0.45; pointer-events:none; }
   .sugg-spare{ font-size:11px; color:var(--warn); margin-top:5px; line-height:1.55; }
+  /* Nowhere left to put this one once the ticked items land. */
+  .sugg-item.no-room{ opacity:0.5; }
+  .sugg-item.no-room .sugg-target-why{ color:var(--warn); }
   .sugg-why{ font-size:11.5px; color:var(--text-faint); line-height:1.6; margin:5px 0 8px; }
   .sugg-arrow{ font-size:12px; color:var(--text-dim); margin-bottom:4px; }
   .sugg-arrow select{
@@ -856,10 +872,16 @@
 
   /* How many titles sit here, at three levels: the whole library, one drive,
      and one category folder. */
-  .lib-count{ margin-top:2px; }
-  .lib-count b{ color:var(--text); }
-  .lib-backups{ color:var(--text-faint); cursor:help; }
-  .drive-count{ color:var(--text-dim); }
+  .drive-counts{
+    display:flex; align-items:center; gap:5px; flex-wrap:wrap; margin-top:-2px;
+    font-family:'IBM Plex Mono', 'Cascadia Mono', Consolas, monospace; font-size:10.5px;
+  }
+  .drive-counts .dc-total{ color:var(--text-dim); margin-right:1px; }
+  .drive-counts .dc-chip{
+    color:var(--text-faint); background:var(--panel-raised);
+    border:1px solid var(--line); border-radius:10px; padding:1px 7px; white-space:nowrap;
+  }
+  .drive-counts .dc-chip b{ color:var(--text-dim); font-weight:600; }
   .cat-count{
     font-family:'IBM Plex Mono','Cascadia Mono',Consolas,monospace; font-size:10.5px; color:var(--text-faint);
     background:var(--panel-raised); border:1px solid var(--line);
@@ -986,17 +1008,11 @@
     <div class="head-id">
       <div class="eyebrow">MediaVault</div>
       <h1>Drive Inventory</h1>
-      <div class="sub">{{ stats.drive_count }} drives · {{ stats.connected_count }} connected</div>
-      {% if library.total %}
-      <div class="sub lib-count">
-        <b>{{ library.total }} titles</b>{% if library.parts|length > 1 %}:
-        {% for label, n in library.parts %}{{ n }} {{ label }}{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}{% if library.backups %}
-        <span class="lib-backups" title="Copies in a redundancy folder. Not counted as titles, since a copy is not another title.">
-          + {{ library.backups }} backup copies</span>{% endif %}
-      </div>
-      {% endif %}
     </div>
 
+    {# Two rows in one panel: capacity along the top, what is actually stored
+       along the bottom. Every figure gets its own cell, so the row uses the
+       full width and stays one line however many categories exist. #}
     <div class="overview">
       <div class="cell gauge-cell">
         <div class="label">Overall capacity</div>
@@ -1007,10 +1023,29 @@
         </div>
         <div class="gauge-caption"><span>{{ stats.pct_used }}% used</span><span>{{ stats.free_h }} free</span></div>
       </div>
-      <div class="cell"><div class="label">Drives</div><div class="value">{{ stats.drive_count }}</div></div>
+      <div class="cell">
+        <div class="label">Drives</div>
+        <div class="value">{{ stats.drive_count }}</div>
+        <div class="cell-sub">{{ stats.connected_count }} connected</div>
+      </div>
       <div class="cell"><div class="label">Total</div><div class="value">{{ stats.total_h }}</div></div>
       <div class="cell"><div class="label">Used</div><div class="value">{{ stats.used_h }}</div></div>
       <div class="cell"><div class="label">Free</div><div class="value">{{ stats.free_h }}</div></div>
+
+      {% if library.total %}
+      <div class="cell span-first">
+        <div class="label">Titles</div>
+        <div class="value">{{ library.total }}</div>
+      </div>
+      {% for label, n in library.parts %}
+      <div class="cell"><div class="label">{{ label }}</div><div class="value">{{ n }}</div></div>
+      {% endfor %}
+      {% if library.backups %}
+      <div class="cell" title="Copies in a redundancy folder. Not counted as titles, since a copy is not another title.">
+        <div class="label">backups</div><div class="value dim">{{ library.backups }}</div>
+      </div>
+      {% endif %}
+      {% endif %}
     </div>
   </div>
 
@@ -1180,10 +1215,10 @@
       <span class="filter-label">Sort</span>
       <select id="drive-sort" class="sort-select" onchange="applyDriveSort()">
         <option value="label">Name</option>
-        <option value="free">Most free space</option>
-        <option value="freepct">Most free, by share</option>
-        <option value="used">Fullest</option>
-        <option value="size">Largest</option>
+        <option value="free" title="Most free gigabytes, so the drive with the most room for a large title">Most free space (GB)</option>
+        <option value="freepct" title="Most free as a share of its own size, so the emptiest drive rather than the biggest">Emptiest (% free)</option>
+        <option value="used" title="Highest percentage used, so the drives closest to full come first">Fullest (% used)</option>
+        <option value="size">Largest capacity</option>
         <option value="type">Type</option>
       </select>
     </span>
@@ -1412,10 +1447,6 @@
               <span class="conn-label off">not connected</span>
             {% endif %}
             · last scanned {{ d.last_scanned[:16] if d.last_scanned else 'never' }}
-            {% if d.counts.total %}
-            · <span class="drive-count">{{ d.counts.total }} titles{% if d.counts.parts|length > 1 %}
-              ({% for label, n in d.counts.parts %}{{ n }} {{ label }}{% if not loop.last %}, {% endif %}{% endfor %}){% endif %}</span>
-            {% endif %}
           </div>
         </div>
         <div style="display:flex; align-items:center; gap:16px;">
@@ -1423,6 +1454,17 @@
           <span class="chevron">▾</span>
         </div>
       </div>
+      {% if d.counts.total %}
+      {# Its own row rather than inside the left column, which the capacity
+         figures squeeze to about half the card. Chips rather than a sentence
+         in brackets, which ran together once a drive held four categories. #}
+      <div class="drive-counts">
+        <span class="dc-total">{{ d.counts.total }} titles</span>
+        {% for label, n in d.counts.parts %}
+        <span class="dc-chip"><b>{{ n }}</b> {{ label }}</span>
+        {% endfor %}
+      </div>
+      {% endif %}
       <div class="gauge {% if d.pct_used > 90 %}crit{% elif d.pct_used > 80 %}warn{% endif %}">
         {% for i in range(40) %}<div class="seg {% if i < d.segments_filled %}filled{% endif %}"></div>{% endfor %}
       </div>
@@ -1584,6 +1626,21 @@
       </button>
     </div>
     <div class="modal-note" id="sugg-summary"></div>
+  </div>
+</div>
+
+{# One reusable confirm, so the app never falls back to the browser's own
+   dialog. Filled in and resolved by askConfirm(). #}
+<div id="confirm-backdrop" class="modal-backdrop">
+  <div class="modal">
+    <div class="modal-title" id="confirm-title">Are you sure?</div>
+    <div class="modal-body" id="confirm-body"></div>
+    <div class="modal-name" id="confirm-list" style="display:none;"></div>
+    <div class="modal-actions">
+      <button class="bulk-btn ghost" id="confirm-no">Cancel</button>
+      <button class="bulk-btn apply" id="confirm-yes">Continue</button>
+    </div>
+    <div class="modal-note" id="confirm-note" style="display:none;"></div>
   </div>
 </div>
 
@@ -1821,8 +1878,17 @@ document.addEventListener('click', function(e){
   if(deleteBtn){
     const drive = deleteBtn.closest('.drive');
     const label = drive.querySelector('.drive-name').textContent.trim();
-    if(!confirm(`Forget "${label}"?\n\nThis removes the drive, its indexed contents, and its tags from MediaVault. Nothing on the actual drive is touched. Rescanning adds the drive back, but tags you set by hand will be gone.`)) return;
-    postJSON('/api/drive/delete', {drive_id: drive.dataset.driveId}, () => drive.remove());
+    askConfirm({
+      title: `Forget "${label}"?`,
+      body: 'This removes the drive, its indexed contents and its tags from '
+          + 'MediaVault. <b>Nothing on the actual drive is touched.</b>',
+      note: 'Rescanning adds the drive back, but tags you set by hand will be gone.',
+      confirmLabel: 'Forget it',
+      danger: true
+    }).then(ok => {
+      if(ok) postJSON('/api/drive/delete', {drive_id: drive.dataset.driveId},
+                      () => drive.remove());
+    });
     return;
   }
   // Not a control - a bare click on the header expands/collapses the drive.
@@ -1922,6 +1988,55 @@ function cancelScheduledReload(buttonId, cancelId){
 
 window.addEventListener('DOMContentLoaded', restoreViewState);
 
+/* ---------- confirm dialog ----------
+   The page's own, rather than the browser's. A native confirm() cannot show
+   a formatted list, and on a local app it reads like something a website is
+   trying to pull. Returns a promise for true or false. */
+function askConfirm({title, body, list, note, confirmLabel, danger}){
+  const backdrop = document.getElementById('confirm-backdrop');
+  document.getElementById('confirm-title').textContent = title;
+  document.getElementById('confirm-body').innerHTML = body || '';
+
+  const listEl = document.getElementById('confirm-list');
+  listEl.style.display = list ? '' : 'none';
+  listEl.textContent = list || '';
+
+  const noteEl = document.getElementById('confirm-note');
+  noteEl.style.display = note ? '' : 'none';
+  noteEl.textContent = note || '';
+
+  const yes = document.getElementById('confirm-yes');
+  const no = document.getElementById('confirm-no');
+  yes.textContent = confirmLabel || 'Continue';
+  yes.classList.toggle('danger', !!danger);
+  yes.classList.toggle('apply', !danger);
+
+  backdrop.classList.add('show');
+  yes.focus();
+
+  return new Promise(resolve => {
+    const finish = (answer) => {
+      backdrop.classList.remove('show');
+      yes.removeEventListener('click', onYes);
+      no.removeEventListener('click', onNo);
+      backdrop.removeEventListener('click', onOutside);
+      document.removeEventListener('keydown', onKey);
+      resolve(answer);
+    };
+    const onYes = () => finish(true);
+    const onNo = () => finish(false);
+    const onOutside = (e) => { if(e.target === backdrop) finish(false); };
+    const onKey = (e) => {
+      if(e.key === 'Escape') finish(false);
+      if(e.key === 'Enter' && document.activeElement !== no) finish(true);
+    };
+    yes.addEventListener('click', onYes);
+    no.addEventListener('click', onNo);
+    backdrop.addEventListener('click', onOutside);
+    document.addEventListener('keydown', onKey);
+  });
+}
+
 /* ---------- scanning ----------
    The scan runs on the server in a background thread. This starts it, then
    polls for progress until it finishes. Polling rather than holding the
@@ -1942,14 +2057,23 @@ async function startScan(){
   }
 
   if(targets.length === 0){
-    alert('No drives to scan.\n\nConnect a drive with a Videos folder on it, '
-        + 'or scan it once from the command line first.');
+    await askConfirm({
+      title: 'No drives to scan',
+      body: 'Connect a drive with a <code>Videos</code> folder on it, or scan '
+          + 'it once from the command line first.',
+      confirmLabel: 'Close'
+    });
     return;
   }
 
-  const list = targets.map(t => `  ${t.label}  (${t.root}, ${t.reason})`).join('\n');
-  if(!confirm(`Scan ${targets.length} drive(s)?\n\n${list}\n\n`
-            + `This reads every folder on them and can take a few minutes.`)) return;
+  const ok = await askConfirm({
+    title: `Scan ${targets.length} drive${targets.length === 1 ? '' : 's'}?`,
+    body: 'This reads every folder on them, which can take a few minutes. '
+        + 'Nothing is changed on disk.',
+    list: targets.map(t => `${t.label}   ${t.root}   (${t.reason})`).join('\n'),
+    confirmLabel: 'Scan'
+  });
+  if(!ok) return;
 
   btn.disabled = true;
   btn.textContent = 'Scanning…';
@@ -2336,7 +2460,9 @@ function runBackup(){
   };
   postJSON('/api/backup', {}, (data) => {
     done();
-    flashToast(`Database backed up to ${data.target}`);
+    flashToast(data.skipped
+      ? `Already up to date on ${data.target}, nothing to send`
+      : `Database backed up to ${data.target}`);
   }, done);
 }
 
@@ -2494,8 +2620,14 @@ function closeSetup(){
 async function runSetup(){
   const chosen = [...document.querySelectorAll('#setup-list input:checked')].map(b => b.value);
   if(chosen.length === 0){ alert('Pick at least one drive first.'); return; }
-  if(!confirm(`Create the library folders on ${chosen.length} drive(s)?\n\n`
-            + chosen.join('\n'))) return;
+  const ok = await askConfirm({
+    title: `Create the library folders on ${chosen.length} drive${chosen.length === 1 ? '' : 's'}?`,
+    body: 'Creates <code>Videos</code> with the category folders inside. '
+        + 'Nothing existing is modified.',
+    list: chosen.join('\n'),
+    confirmLabel: 'Create folders'
+  });
+  if(!ok) return;
 
   const btn = document.getElementById('setup-go');
   btn.disabled = true;
@@ -2534,7 +2666,11 @@ async function loadSuggestions(){
   // Anything already ticked is put back afterwards, so tagging a title from
   // in here does not quietly throw away the rest of the selection.
   const wasTicked = new Set(checkedSuggestions().map(c => c.dataset.nodeId));
-  body.innerHTML = '<div class="sugg-empty">Working out what is worth moving…</div>';
+  // Only on a cold open. Refreshing after a tag toggle leaves the current
+  // list in place, so the panel does not blink through an empty state.
+  if(!body.querySelector('.sugg-group')){
+    body.innerHTML = '<div class="sugg-empty">Working out what is worth moving…</div>';
+  }
   const recent = document.getElementById('sugg-include-recent').checked ? '1' : '0';
   try{
     suggestionData = await (await fetch('/api/suggestions?include_recent=' + recent)).json();
@@ -2546,6 +2682,7 @@ async function loadSuggestions(){
   document.querySelectorAll('.sugg-check').forEach(box => {
     if(wasTicked.has(box.dataset.nodeId)) box.checked = true;
   });
+  refreshTargets();
   updateSuggestionSummary();
 }
 
@@ -2584,6 +2721,7 @@ function renderSuggestions(){
     body.appendChild(buildSpreadPanel(data.redundancy));
   }
 
+  refreshTargets();
   updateSuggestionSummary();
 }
 
@@ -2618,7 +2756,10 @@ function buildSuggestionItem(group, candidate){
   box.className = 'sugg-check';
   box.dataset.nodeId = candidate.node_id;
   box.dataset.operation = group.reason === 'protect' ? 'copy' : 'move';
-  box.addEventListener('change', updateSuggestionSummary);
+  box.addEventListener('change', () => {
+    refreshTargets();
+    updateSuggestionSummary();
+  });
 
   const right = document.createElement('div');
 
@@ -2640,31 +2781,26 @@ function buildSuggestionItem(group, candidate){
   arrow.className = 'sugg-arrow';
   arrow.append(document.createTextNode(
     group.reason === 'protect' ? 'Copy to ' : 'Move to '));
+  // Options are filled by refreshTargets(), which projects each destination
+  // against whatever is already ticked.
   const select = document.createElement('select');
-  candidate.targets.forEach(t => {
-    const option = document.createElement('option');
-    option.value = t.drive_id;
-    option.textContent = `${t.label} · ${t.detail}`;
-    select.appendChild(option);
-  });
-  select.value = candidate.suggested_target;
   select.addEventListener('change', () => {
     const chosen = candidate.targets.find(t => t.drive_id === select.value);
     targetWhy.textContent = chosen ? chosen.why : '';
     updateSpareWarning(chosen, spare);
+    // Changing where this one goes moves bytes between drives, so every
+    // other row's remaining space has to be worked out again.
+    if(box.checked) refreshTargets();
   });
   arrow.appendChild(select);
 
   const targetWhy = document.createElement('div');
   targetWhy.className = 'sugg-target-why';
-  const first = candidate.targets.find(t => t.drive_id === candidate.suggested_target);
-  targetWhy.textContent = first ? first.why : '';
 
   // A card or a stick is a spare copy, never protection, so picking one has
   // to say so rather than leaving the title looking covered.
   const spare = document.createElement('div');
   spare.className = 'sugg-spare';
-  updateSpareWarning(first, spare);
 
   right.append(name, why, arrow, targetWhy, spare);
 
@@ -2681,7 +2817,122 @@ function buildSuggestionItem(group, candidate){
   row.append(box, right);
   row.selectEl = select;
   box.selectEl = select;
+  box.candidate = candidate;
+  // Kept so refreshTargets() can rewrite this row without rebuilding it.
+  row.parts = {select, targetWhy, spare, candidate};
   return row;
+}
+
+/* ---------- destinations, as the selection grows ----------
+   Ticking a suggestion commits its bytes to a drive, so every other
+   suggestion pointing at that drive has less room than the server thought.
+   Without this the third tick could propose a drive the first two already
+   filled. Recomputed from the numbers already on the page: no request, and
+   the cost is one pass over the ticked items plus one over the rows. */
+function committedBytes(){
+  const committed = new Map();
+  checkedSuggestions().forEach(box => {
+    const target = box.selectEl.value;
+    committed.set(target, (committed.get(target) || 0) + (box.candidate.size_bytes || 0));
+  });
+  return committed;
+}
+
+function gb(bytes){ return (bytes / (1024 ** 3)); }
+
+/* What a destination looks like once everything ticked ahead of it has
+   landed. Returns null when it no longer has room, or would breach its own
+   threshold, which is the same test the server applies. */
+function projectTarget(target, candidate, committed, isBackup){
+  const already = committed.get(target.drive_id) || 0;
+  const freeAfter = target.free_bytes - already - (candidate.size_bytes || 0);
+  if(freeAfter <= 0) return null;
+
+  const pctAfter = target.total_bytes ? (100 * freeAfter / target.total_bytes) : 0;
+  // A backup may fill a drive; a move must not simply relocate the problem.
+  if(!isBackup && pctAfter < target.threshold_pct) return null;
+
+  return {freeAfter, pctAfter, already};
+}
+
+function describeTarget(target, projected, isBackup){
+  const free = `${gb(projected.freeAfter).toFixed(0)} GB free`;
+  const pct = `${projected.pctAfter.toFixed(1)}% free`;
+  const after = projected.already ? ' after the ones ticked above' : ' afterwards';
+  if(isBackup){
+    return `${target.label} · ${target.backups_here} backup(s) here · `
+         + `${free} (${pct})${after}`;
+  }
+  return `${target.label} · ${free} (${pct})${after}`;
+}
+
+/* Rewrite every unticked row's destination list against what is now
+   committed. A ticked row is left alone: its choice has been made, and
+   moving it under the user would be worse than a slightly stale figure. */
+function refreshTargets(){
+  const committed = committedBytes();
+
+  document.querySelectorAll('.sugg-item').forEach(row => {
+    if(!row.parts) return;
+    const box = row.querySelector('.sugg-check');
+    if(box.checked) return;
+
+    const {select, targetWhy, spare, candidate} = row.parts;
+    const isBackup = box.dataset.operation === 'copy';
+    const previous = select.value;
+
+    const usable = [];
+    candidate.targets.forEach(t => {
+      const projected = projectTarget(t, candidate, committed, isBackup);
+      if(projected) usable.push({target: t, projected});
+    });
+
+    // Same order the server used, re-applied to the projected space.
+    usable.sort((a, b) => {
+      const tierA = a.target.tier, tierB = b.target.tier;
+      if(tierA && tierB){
+        for(let i = 0; i < Math.max(tierA.length, tierB.length); i++){
+          const d = (tierA[i] || 0) - (tierB[i] || 0);
+          if(d) return d;
+        }
+      } else if(a.target.rank !== b.target.rank){
+        return a.target.rank - b.target.rank;
+      }
+      return b.projected.freeAfter - a.projected.freeAfter;
+    });
+
+    select.innerHTML = '';
+    if(usable.length === 0){
+      const option = document.createElement('option');
+      option.textContent = 'No drive has room once the ticked ones land';
+      option.value = '';
+      select.appendChild(option);
+      select.disabled = true;
+      box.disabled = true;
+      box.checked = false;
+      row.classList.add('no-room');
+      targetWhy.textContent = 'Untick something above, or connect another drive.';
+      spare.style.display = 'none';
+      return;
+    }
+
+    select.disabled = false;
+    box.disabled = false;
+    row.classList.remove('no-room');
+    usable.forEach(({target, projected}) => {
+      const option = document.createElement('option');
+      option.value = target.drive_id;
+      option.textContent = describeTarget(target, projected, isBackup);
+      select.appendChild(option);
+    });
+
+    // Keep the chosen drive if it is still viable, otherwise take the new best.
+    select.value = usable.some(u => u.target.drive_id === previous)
+      ? previous : usable[0].target.drive_id;
+    const chosen = candidate.targets.find(t => t.drive_id === select.value);
+    targetWhy.textContent = chosen ? chosen.why : '';
+    updateSpareWarning(chosen, spare);
+  });
 }
 
 function updateSpareWarning(target, el){
@@ -2717,16 +2968,21 @@ function buildSuggestionTags(candidate){
     button.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      toggleSuggestionTag(candidate, spec, !on);
+      toggleSuggestionTag(candidate, button, spec, !button.classList.contains('on'));
     });
     box.appendChild(button);
   });
   return box;
 }
 
-function toggleSuggestionTag(candidate, spec, turningOn){
-  const body = document.getElementById('sugg-body');
-  body.classList.add('recalc');
+/* The toggle flips immediately and the list refreshes underneath. The write
+   and the rebuild are both fast, so there is nothing worth blocking the panel
+   for; anything that fails is reported and the list left as it was. */
+function toggleSuggestionTag(candidate, button, spec, turningOn){
+  candidate[spec.field] = turningOn;
+  button.classList.toggle('on', turningOn);
+  button.title = turningOn ? spec.on : spec.off;
+
   postTag(candidate.drive_id, candidate.rel_path, spec.tag,
           turningOn ? 'add' : 'remove',
           () => {
@@ -2734,9 +2990,11 @@ function toggleSuggestionTag(candidate, spec, turningOn){
             // step rather than making a reload the only way to see the change.
             syncTreeTag(candidate, spec.tag, turningOn);
             loadSuggestions();
+          },
+          () => {                       // put the toggle back if it failed
+            candidate[spec.field] = !turningOn;
+            button.classList.toggle('on', !turningOn);
           });
-  // A failed tag leaves the list as it was, so lift the veil either way.
-  setTimeout(() => body.classList.remove('recalc'), 4000);
 }
 
 /* Mirror a tag change from the suggestions panel onto the tree underneath. */
@@ -4185,7 +4443,7 @@ document.addEventListener('keydown', function(e){
     input.style.display = 'none';
   }
 });
-async function postTag(driveId, relPath, tag, action, onSuccess){
+async function postTag(driveId, relPath, tag, action, onSuccess, onFailure){
   try{
     const res = await fetch('/api/tag', {
       method: 'POST',
@@ -4193,10 +4451,15 @@ async function postTag(driveId, relPath, tag, action, onSuccess){
       body: JSON.stringify({drive_id: driveId, rel_path: relPath, tag: tag, action: action})
     });
     const data = await res.json();
-    if(!data.ok){ alert('Failed to update tag: ' + (data.error || 'unknown error')); return; }
+    if(!data.ok){
+      alert('Failed to update tag: ' + (data.error || 'unknown error'));
+      if(onFailure) onFailure();
+      return;
+    }
     if(onSuccess) onSuccess();
   } catch(err){
     alert('Network error updating tag - is dashboard.py still running?');
+    if(onFailure) onFailure();
   }
 }
 </script>

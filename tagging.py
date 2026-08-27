@@ -55,8 +55,8 @@ def default_tags_for_category(category_name):
 # twice.
 CATEGORY_BUCKETS = [
     ("anime", "anime", lambda n: "anime" in n and not ("movie" in n or "film" in n)),
-    ("anime-movies", "anime films", lambda n: "anime" in n),
-    ("tv", "TV shows", lambda n: "tv" in n or "show" in n or "series" in n),
+    ("anime-movies", "anime-films", lambda n: "anime" in n),
+    ("tv", "shows", lambda n: "tv" in n or "show" in n or "series" in n),
     ("movies", "movies", lambda n: "movie" in n or "film" in n),
     ("other", "other", lambda _n: True),
 ]

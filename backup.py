@@ -13,6 +13,8 @@ The destination is any configured rclone path. rclone only needs to be on
 PATH.
 """
 
+import hashlib
+import json
 import os
 import shutil
 import sqlite3
@@ -27,6 +29,11 @@ from db import DB_PATH
 WORK_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".backup")
 SNAPSHOT_PATH = os.path.join(WORK_DIR, "mediavault.db")
 LOG_FILE = os.path.join(WORK_DIR, "rclone.log")
+STATE_FILE = os.path.join(WORK_DIR, "last.json")
+
+# The dashboard runs under pythonw, which has no console, so a child process
+# gets given a new one and it flashes on screen. rclone has nothing to show.
+CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 # A few megabytes should never take this long. Longer means a dead network or
 # rclone sitting at a prompt, and the dashboard needs an answer either way.
@@ -55,6 +62,31 @@ def snapshot(dest=SNAPSHOT_PATH):
     return dest
 
 
+def digest(path):
+    h = hashlib.sha1()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _last_upload():
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def _remember_upload(target, sha):
+    try:
+        with open(STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump({"target": target, "sha1": sha, "at": datetime.now().isoformat(
+                timespec="seconds")}, f)
+    except OSError:
+        pass
+
+
 def run(target=None):
     """Snapshot the database and upload it. Raises BackupError with a message
     both callers show straight to the user."""
@@ -76,6 +108,20 @@ def run(target=None):
     except OSError as e:
         raise BackupError(f"Could not write the snapshot: {e}")
 
+    # Nothing has changed since the last upload, so there is nothing to send.
+    # VACUUM INTO rewrites the file every time, so its timestamp and size tell
+    # you nothing; the contents are the only honest test.
+    sha = digest(SNAPSHOT_PATH)
+    last = _last_upload()
+    if last.get("sha1") == sha and last.get("target") == target:
+        return {
+            "target": target,
+            "bytes": os.path.getsize(SNAPSHOT_PATH),
+            "at": datetime.now().isoformat(timespec="seconds"),
+            "skipped": True,
+            "last_at": last.get("at"),
+        }
+
     stamp = datetime.now().strftime("%Y-%m-%d")
     try:
         result = subprocess.run(
@@ -85,10 +131,14 @@ def run(target=None):
                 # Most of this database can be rebuilt by rescanning, but tags
                 # are typed by hand, so today must not bury a better copy.
                 "--backup-dir", f"{target.rstrip('/')}/history/{stamp}",
+                # One known file to one known place: no reason to list the
+                # remote directory first, which is a round trip of its own.
+                "--no-traverse",
                 "--log-file", LOG_FILE,
                 "--log-level", "NOTICE",
             ],
             capture_output=True, text=True, timeout=TIMEOUT_SECONDS,
+            creationflags=CREATE_NO_WINDOW,
         )
     except subprocess.TimeoutExpired:
         raise BackupError("rclone took too long and was stopped.")
@@ -101,10 +151,12 @@ def run(target=None):
         tail = detail[-1] if detail else f"exit code {result.returncode}"
         raise BackupError(f"rclone failed: {tail}")
 
+    _remember_upload(target, sha)
     return {
         "target": target,
         "bytes": os.path.getsize(SNAPSHOT_PATH),
         "at": datetime.now().isoformat(timespec="seconds"),
+        "skipped": False,
     }
 
 

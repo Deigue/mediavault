@@ -175,11 +175,12 @@ def rank_targets(source, drives, size_needed):
             "type_label": drivetypes.rule_for(d["type"])["label"],
             "external": d["external"],
             "free_bytes": d["free_bytes"],
+            "total_bytes": d["total_bytes"],
+            "threshold_pct": d["space"]["threshold_pct"],
             "free_after": free_after,
             "pct_after": round(pct_after, 1),
             "rank": rank,
             "why": why,
-            "detail": f"{free_after / 2**30:.0f} GB free afterwards, {round(pct_after, 1)}%",
         })
 
     options.sort(key=lambda o: (o["rank"], -o["free_after"]))
@@ -337,7 +338,10 @@ def rank_backup_targets(source_drive_id, size_needed, drives=None, counts=None):
             # The UI marks these so a spare copy never reads as protection.
             "counts_as_protection": not is_flash,
             "why": why,
-            "detail": (f"{held} backup(s) here, {d['free_bytes'] / 2**30:.0f} GB free"),
+            "backups_here": held,
+            "total_bytes": d["total_bytes"],
+            "threshold_pct": d["space"]["threshold_pct"],
+            "free_after": d["free_bytes"] - size_needed,
             "rank": (
                 1 if same_drive else 0,      # a copy beside the original is last
                 1 if is_flash else 0,        # a card is a spare, not protection
@@ -349,7 +353,10 @@ def rank_backup_targets(source_drive_id, size_needed, drives=None, counts=None):
         })
 
     options.sort(key=lambda o: o["rank"])
+    # The client re-ranks as items are ticked, so it needs the tier that does
+    # not depend on how much space is left.
     for o in options:
+        o["tier"] = list(o["rank"][:5])
         del o["rank"]
     return options
 

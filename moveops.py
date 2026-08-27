@@ -21,6 +21,11 @@ import scanner
 # and so on). 8 and above mean at least one file failed to copy.
 ROBOCOPY_OK_MAX = 7
 
+# The dashboard runs under pythonw and has no console, so a console program
+# started from it gets a new window that flashes on screen. The GUI copiers
+# below are launched without this on purpose: their window is the point.
+CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+
 
 class MoveError(Exception):
     """Something went wrong that the user should be told about."""
@@ -252,7 +257,8 @@ def _copy_with_robocopy(source, target, is_dir, log):
         args = ["robocopy", os.path.dirname(source), os.path.dirname(target),
                 os.path.basename(source), "/R:1", "/W:1", "/NFL", "/NDL", "/NJH", "/NJS"]
 
-    result = subprocess.run(args, capture_output=True, text=True)
+    result = subprocess.run(args, capture_output=True, text=True,
+                            creationflags=CREATE_NO_WINDOW)
     if result.returncode > ROBOCOPY_OK_MAX:
         raise MoveError(f"robocopy failed (exit {result.returncode}): "
                         f"{(result.stdout or result.stderr or '').strip()[:400]}")

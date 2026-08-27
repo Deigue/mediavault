@@ -13,6 +13,8 @@ hand.
 import os
 import re
 
+import tagging
+
 # "Season 2", "S01", "S01-05", "Part 3", "Cour 2". The leading separator is
 # what stops a title beginning with S matching on its own first letter.
 SEASON_RE = re.compile(
@@ -32,6 +34,10 @@ MAX_STRAY_VIDEOS = 2
 # Below this a folder is a title with extras, not a collection of works.
 MIN_COLLECTION_FOLDERS = 3
 
+# In a film category, anything this big is a feature rather than a trailer,
+# a featurette or a sample. Two of them in one folder means two films.
+FEATURE_BYTES = 300 * 2**20
+
 HINTS = {
     "seasons-inside": {
         "label": "Seasons buried inside",
@@ -42,7 +48,8 @@ HINTS = {
         "label": "Several titles in one folder",
         "detail": "This groups separate works rather than being one title. "
                   "Backup matching and tags all work per title, so anything "
-                  "in here is invisible to them.",
+                  "in here is invisible to them, and a media player will not "
+                  "match the individual works either.",
     },
     "movie-inside": {
         "label": "Loose film in a series folder",
@@ -60,35 +67,53 @@ def is_video(name):
     return os.path.splitext(name)[1].lower() in VIDEO_EXTENSIONS
 
 
-def hints_for(children, is_anime):
+def hints_for(children, is_anime, is_films=False):
     """
-    Which hints a title earns, given its direct children as (name, is_dir).
+    Which hints a title earns, from its children as (name, is_dir, size).
 
-    seasons-inside is anime only. A TV show keeping its seasons in subfolders
-    is the documented layout, so flagging those would be wrong.
+    seasons-inside is anime only, since a TV show keeping its seasons in
+    subfolders is the documented layout. The film rule is the other way
+    round: one folder should hold one film, so a second feature-sized video
+    beside the first means the folder is really a box set.
     """
-    season_dirs, other_dirs, videos = [], [], []
-    for name, is_dir in children:
+    season_dirs, other_dirs, videos, features = [], [], [], []
+    for name, is_dir, size in children:
         if is_dir:
             (season_dirs if looks_like_season(name) else other_dirs).append(name)
         elif is_video(name):
             videos.append(name)
+            if (size or 0) >= FEATURE_BYTES:
+                features.append(name)
 
     found = []
     if is_anime and len(season_dirs) >= 2:
         found.append("seasons-inside")
-    if not season_dirs and len(other_dirs) >= MIN_COLLECTION_FOLDERS:
+
+    # A box set shows up either as several folders, or in a film category as
+    # several features side by side with no folders at all.
+    works = len(other_dirs) + (len(features) if is_films else 0)
+    if not season_dirs and (works >= 2 if is_films else works >= MIN_COLLECTION_FOLDERS):
         found.append("collection")
+
     if season_dirs and 1 <= len(videos) <= MAX_STRAY_VIDEOS:
         found.append("movie-inside")
     return found
 
 
+def category_of(rel_path):
+    parts = rel_path.split(os.sep)
+    return parts[1] if len(parts) > 1 else ""
+
+
 def is_anime_category(rel_path):
     """Anime, but not Anime Movies, where one folder per film is correct."""
-    parts = rel_path.split(os.sep)
-    category = parts[1].lower() if len(parts) > 1 else ""
+    category = category_of(rel_path).lower()
     return "anime" in category and "movie" not in category
+
+
+def is_film_category(rel_path):
+    """A category holding films, where one folder means one film."""
+    return tagging.bucket_for_category(category_of(rel_path))[0] in ("movies", "anime-movies")
 
 
 def hints_for_drive(drive_id, conn):
@@ -108,17 +133,20 @@ def hints_for_drive(drive_id, conn):
 
     children = {}
     for row in conn.execute(
-        "SELECT parent_id, name, is_dir FROM nodes WHERE drive_id = ? AND depth = 3",
+        "SELECT parent_id, name, is_dir, size_bytes FROM nodes "
+        "WHERE drive_id = ? AND depth = 3",
         (drive_id,),
     ):
-        children.setdefault(row["parent_id"], []).append((row["name"], row["is_dir"]))
+        children.setdefault(row["parent_id"], []).append(
+            (row["name"], row["is_dir"], row["size_bytes"]))
 
     found = {}
     for title in titles:
         kids = children.get(title["id"])
         if not kids:
             continue
-        hints = hints_for(kids, is_anime_category(title["rel_path"]))
+        hints = hints_for(kids, is_anime_category(title["rel_path"]),
+                          is_film_category(title["rel_path"]))
         if hints:
             found[title["id"]] = hints
     return found
