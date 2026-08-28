@@ -27,6 +27,7 @@ import scanjob
 import structure
 import suggestions
 import tagging
+import webguard
 
 app = Flask(__name__)
 # Otherwise Jinja caches the compiled template and edits to dashboard.html
@@ -65,6 +66,11 @@ def _close_request_connection():
     shared = g.pop("_db", None) if has_request_context() else None
     if shared is not None:
         shared.real_close()
+
+
+@app.before_request
+def guard_request():
+    return webguard.guard()
 
 
 @app.teardown_request
@@ -156,6 +162,70 @@ def drive_letter(live_mount, remembered):
     stay accurate without the name going stale.
     """
     return scanner.drive_letter_for(live_mount) or remembered or None
+
+
+def summarise_database(info):
+    """"7 drives, 5,837 titles, 139 tags, last scanned 3d ago"."""
+    def count(n, thing):
+        return f"{n:,} {thing}" + ("" if n == 1 else "s")
+    return (f"{count(info['drives'], 'drive')}, {count(info['titles'], 'title')}, "
+            f"{count(info['tags'], 'tag')}, last scanned {ago(info['last_scanned'])}")
+
+
+def db_path_question(target, answered):
+    """
+    What to ask before pointing the app at target, or None to just get on
+    with it.
+
+    Two things can need an answer: the location is a poor home for a database
+    that is written constantly, and there is already one sitting there. Both
+    go in one dialog, because being asked twice about one decision is worse
+    than one longer question.
+    """
+    if answered:
+        return None
+    warning = config.db_path_warning(target)
+    occupied = os.path.exists(target)
+    existing = db.describe_database(target)
+    if not occupied and not warning:
+        return None
+
+    body = [warning] if warning else []
+    choices = []
+    if existing:
+        body.append(f"{target} already holds a MediaVault database.")
+        choices.append({
+            "value": "adopt",
+            "label": "Use the one that is already there",
+            "detail": f"It holds {summarise_database(existing)}. The database "
+                      f"you are using now stays at {db.db_path()}, untouched.",
+        })
+    elif occupied:
+        body.append(f"There is already a file at {target}, and it is not a "
+                    f"MediaVault database.")
+
+    mine = db.describe_database(db.db_path())
+    if occupied:
+        choices.append({
+            "value": "replace",
+            "label": "Put the one you are using now there instead",
+            "detail": (f"Moves your {summarise_database(mine)}. " if mine else "")
+                      + "What is there now is renamed out of the way rather "
+                        "than deleted, so it can be put back.",
+            "danger": True,
+        })
+    else:
+        choices.append({"value": "move", "label": "Move it there anyway",
+                        "danger": True})
+
+    return {
+        "field": "db_path_mode",
+        "title": "There is already a database there" if existing else
+                 ("There is already a file there" if occupied else
+                  "Keep the database there?"),
+        "body": "\n\n".join(body),
+        "choices": choices,
+    }
 
 
 def summarise_counts(per_category):
@@ -379,6 +449,8 @@ def home():
         hint_meta=structure.HINTS,
         # Only the types that can be chosen, in the order the chips show them.
         drive_types=[(t, drivetypes.rule_for(t)["label"]) for t in drivetypes.ALL_TYPES],
+        csrf_token=webguard.CSRF_TOKEN,
+        csrf_header=webguard.CSRF_HEADER,
     )
 
 
@@ -745,6 +817,7 @@ def api_settings():
         "note": note,
         "config_path": config.CONFIG_PATH,
         "db_path": db.db_path(),
+        "db_path_warning": config.db_path_warning(db.db_path()),
         "db_env_override": bool(os.environ.get("MEDIAVAULT_DB")),
         # So the panel can say up front whether Backup can do anything,
         # rather than the button failing when pressed.
@@ -775,7 +848,7 @@ def api_settings_save():
         # rclone reports a bad target clearly enough when it runs.
         settings["backup_target"] = (data["backup_target"] or "").strip()
 
-    moved_to = None
+    outcome = {"db_moved_to": None, "db_adopted": None, "db_replaced": None}
     if "db_path" in data:
         wanted = (data["db_path"] or "").strip()
         if os.environ.get("MEDIAVAULT_DB"):
@@ -784,29 +857,46 @@ def api_settings_save():
                 "error": "MEDIAVAULT_DB is set in the environment and wins over "
                          "this setting. Clear it first, or change it there.",
             }), 400
+
+        target = db.resolve_db_path(wanted) if wanted else db.db_path()
+        mode = data.get("db_path_mode")
+        # Only when the path is actually changing: saving an unrelated setting
+        # should not re-ask about a location already in use.
+        if os.path.normcase(target) != os.path.normcase(db.db_path()):
+            question = db_path_question(target, mode)
+            if question:
+                return jsonify({"ok": False, "confirm": question}), 409
+
         was = db.db_path()
         # This request has the database open, and Windows will not let a file
         # be removed while a handle is on it. Let it go before moving.
         _close_request_connection()
         try:
-            now = db.move_database(wanted) if wanted else was
+            if mode == "adopt":
+                now = db.adopt_database(target)
+            elif wanted:
+                result = db.move_database(wanted, replace=(mode == "replace"))
+                now, outcome["db_replaced"] = result["path"], result["replaced"]
+            else:
+                now = was
         except OSError as e:
             return jsonify({"ok": False, "error": str(e)}), 400
+
         # Stored only when it is somewhere other than beside the code, so
         # moving the code folder does not leave a stale absolute path winning
         # over the new default.
         settings["db_path"] = (
             "" if os.path.normcase(now) == os.path.normcase(db.DEFAULT_DB_PATH) else now)
-        # Only report a move that happened. Saving other settings leaves the
+        # Only report a change that happened. Saving other settings leaves the
         # path alone, and saying it moved would be a lie.
         if os.path.normcase(now) != os.path.normcase(was):
-            moved_to = now
+            outcome["db_adopted" if mode == "adopt" else "db_moved_to"] = now
 
     saved = config.save(settings)
     tool, path, note = config.resolve_copy_tool(saved)
     return jsonify({"ok": True, "settings": saved, "effective_copy_tool": tool,
                     "effective_path": path, "note": note,
-                    "db_path": db.db_path(), "db_moved_to": moved_to})
+                    "db_path": db.db_path(), **outcome})
 
 
 @app.route("/api/backup", methods=["POST"])
@@ -1030,6 +1120,7 @@ DEV = ("--dev" in sys.argv
 PORT = int(os.environ.get("MEDIAVAULT_PORT", "5152" if DEV else "5151"))
 
 if __name__ == "__main__":
+    webguard.check_bind(HOST)
     db.init_db()
 
     if DEV:

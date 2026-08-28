@@ -129,7 +129,11 @@ unprivileged process cannot touch what the rest of Windows protects.
   `powershell "Get-Process -Id (Get-NetTCPConnection -LocalPort 5151 -State Listen).OwningProcess"`
 - Stop it with `powershell "Stop-ScheduledTask -TaskName 'MediaVault dashboard'"`.
 - `py dashboard.py --dev` runs an auto-reloading copy on 5152 beside it.
-- Idle cost is about 40 MB and no measurable CPU.
+- It listens on 127.0.0.1 only. Pointing `MEDIAVAULT_HOST` wider refuses to
+  start unless `MEDIAVAULT_PASSWORD` is set, since anything that can reach it
+  can delete files.
+- Not containerised: Docker on Windows runs in a VM that cannot see drive
+  letters or hot-plugged drives, which is the whole job here.
 
 ## Shortcuts
 
@@ -155,7 +159,10 @@ an SSH server on the phone, usually [Termux](https://termux.dev/) with
 `openssh`, since that is a real OpenSSH and can report how full the phone is.
 
 Mounting is on demand by design: between mounts there is no process at all,
-and the open window is the honest signal that rclone is running. **Add Phone**
+and the open console is the honest signal that rclone is running. With more
+than one phone set up, **Mount Phone** and **Unmount Phone** ask which, or
+take all of them at once. Mounting all still gives each drive its own
+console, as tabs of one Windows Terminal window. **Add Phone**
 tests the connection before saving and discards a remote it cannot reach.
 Passwords go to rclone through a pipe rather than a command line, and
 `scripts/phones.json` holds only the drive letter, volume name and path.

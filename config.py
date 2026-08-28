@@ -44,6 +44,57 @@ def load():
     return settings
 
 
+# Folder names the desktop sync clients use, matched anywhere in the path
+# because the synced folder is usually an ancestor of the one picked.
+CLOUD_FOLDERS = ("onedrive", "dropbox", "google drive", "googledrive", "gdrive",
+                 "icloud", "box sync", "creative cloud files", "pcloud",
+                 "megasync", "nextcloud", "owncloud", "yandexdisk", "tresorit",
+                 "sync.com", "koofr", "jottacloud")
+
+
+CLOUD_WARNING = (
+    "That looks like a cloud-synced folder. The database is three files that "
+    "only make sense as a set, and a scan rewrites them constantly. A sync "
+    "client uploads each one whenever it happens to notice it, so the copy in "
+    "the cloud can be a set that never existed, and writing its version back "
+    "while the dashboard has the file open can corrupt it.\n\n"
+    "Back up the database instead: that takes one consistent copy and uploads "
+    "only that."
+)
+
+NETWORK_WARNING = (
+    "{what} SQLite guards the file with byte-range locks, which shares do not "
+    "reliably honour, so two writers can damage it and so can a connection "
+    "dropping mid-write. Keep the database on a local disk and back it up to "
+    "the network."
+)
+
+
+def db_path_warning(path):
+    """
+    Why a folder is a poor home for the live database, or None if it is fine.
+
+    A warning, never a refusal. Both cases are the same problem: something
+    other than SQLite is free to copy or rewrite the file behind its back.
+    """
+    if not path:
+        return None
+    lowered = path.replace("/", "\\").lower()
+
+    if any(marker in lowered for marker in CLOUD_FOLDERS):
+        return CLOUD_WARNING
+    if lowered.startswith("\\\\"):
+        return NETWORK_WARNING.format(what="That is a network path.")
+
+    # A mapped letter is the same share under another name. Imported here so
+    # this module keeps its one job and gains no import cycle.
+    import scanner
+    root = os.path.splitdrive(path)[0]
+    if root and scanner.get_drive_type(root + "\\") == scanner.DRIVE_REMOTE:
+        return NETWORK_WARNING.format(what=f"{root} is a network drive.")
+    return None
+
+
 def save(settings):
     """Write settings back, keeping only keys we recognise."""
     clean = {k: v for k, v in settings.items() if k in DEFAULTS}

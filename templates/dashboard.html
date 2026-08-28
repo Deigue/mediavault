@@ -4,6 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MediaVault - Drive Inventory</title>
+{# Every write endpoint wants this back in a header. Another site's page can
+   post to this app but cannot read the page to find the token, so this is
+   what stops it. See webguard.py. #}
+<meta name="mv-csrf-token" content="{{ csrf_token }}">
+<meta name="mv-csrf-header" content="{{ csrf_header }}">
 {# No webfont link. It was a render-blocking request to fonts.googleapis.com,
    which stalls first paint whenever DNS is cold or the machine is offline,
    for a local-only app that has no business waiting on the internet. The
@@ -481,6 +486,7 @@
   .set-path-row{ display:flex; gap:8px; }
   .set-path{ flex:1; width:auto; font-family:'IBM Plex Mono','Cascadia Mono',Consolas,monospace; font-size:11.5px; }
   .set-note{ font-size:11.5px; color:var(--text-faint); margin-top:7px; line-height:1.55; }
+  .set-note.warn{ color:var(--warn); }
   .set-effective{
     font-size:12px; color:var(--text-dim); background:var(--bg);
     border:1px solid var(--line); border-radius:7px; padding:10px 12px; margin-bottom:14px;
@@ -876,6 +882,23 @@
     background:rgba(8,10,14,0.72); align-items:center; justify-content:center; padding:24px;
   }
   .modal-backdrop.show{ display:flex; }
+  /* The last word before something happens, so it goes above every other
+     dialog whatever order they appear in the markup. */
+  #confirm-backdrop{ z-index:105; }
+  /* One row per way of answering, when there is more than a yes and a no.
+     Each carries what it would actually do, since that is the whole question. */
+  .confirm-choices{ display:flex; flex-direction:column; gap:8px; margin-bottom:16px; }
+  .confirm-choice{
+    text-align:left; width:100%; cursor:pointer; padding:11px 13px; border-radius:8px;
+    background:var(--panel-raised); border:1px solid var(--line); color:var(--text);
+    font-family:'IBM Plex Sans','Segoe UI',system-ui,sans-serif;
+  }
+  .confirm-choice:hover{ border-color:var(--accent); background:rgba(79,209,197,0.10); }
+  .confirm-choice.danger:hover{ border-color:var(--crit); background:rgba(232,96,76,0.10); }
+  .confirm-choice .cc-label{ font-size:13.5px; font-weight:600; }
+  .confirm-choice .cc-detail{
+    font-size:11.5px; color:var(--text-dim); line-height:1.55; margin-top:4px;
+  }
   .modal{
     background:var(--panel); border:1px solid var(--line); border-radius:12px;
     padding:22px 24px; max-width:560px; width:100%;
@@ -1345,6 +1368,7 @@
       <span class="filter-label">Sort</span>
       <select id="drive-sort" class="sort-select" onchange="applyDriveSort()">
         <option value="label">Name</option>
+        <option value="letter" title="A to Z by drive letter, the order Explorer shows them in. A drive that has never had one sorts last">Drive letter</option>
         <option value="free" title="Most free gigabytes, so the drive with the most room for a large title">Most free space (GB)</option>
         <option value="freepct" title="Most free as a share of its own size, so the emptiest drive rather than the biggest">Emptiest (% free)</option>
         <option value="used" title="Highest percentage used, so the drives closest to full come first">Fullest (% used)</option>
@@ -1556,6 +1580,7 @@
        data-type="{{ d.drive_type }}"
        data-connected="{{ 1 if d.connected else 0 }}"
        data-label="{{ d.label|lower }}"
+       data-letter="{{ d.current_letter or '' }}"
        data-free="{{ d.free_bytes or 0 }}"
        data-freepct="{{ d.space.free_pct }}"
        data-used="{{ d.pct_used }}"
@@ -1813,6 +1838,7 @@
     <div class="modal-title" id="confirm-title">Are you sure?</div>
     <div class="modal-body" id="confirm-body"></div>
     <div class="modal-name" id="confirm-list" style="display:none;"></div>
+    <div class="confirm-choices" id="confirm-choices" style="display:none;"></div>
     <div class="modal-actions">
       <button class="bulk-btn ghost" id="confirm-no">Cancel</button>
       <button class="bulk-btn apply" id="confirm-yes">Continue</button>
@@ -2194,8 +2220,12 @@ window.addEventListener('DOMContentLoaded', restoreViewState);
 /* ---------- confirm dialog ----------
    The page's own, rather than the browser's. A native confirm() cannot show
    a formatted list, and on a local app it reads like something a website is
-   trying to pull. Returns a promise for true or false. */
-function askConfirm({title, body, list, note, confirmLabel, danger}){
+   trying to pull.
+
+   Resolves to true or false. Pass `choices` instead of `confirmLabel` when a
+   question has more than one way to say yes, and it resolves to the value of
+   whichever was picked, or false for cancel. */
+function askConfirm({title, body, list, note, confirmLabel, danger, choices}){
   const backdrop = document.getElementById('confirm-backdrop');
   document.getElementById('confirm-title').textContent = title;
   document.getElementById('confirm-body').innerHTML = body || '';
@@ -2210,12 +2240,15 @@ function askConfirm({title, body, list, note, confirmLabel, danger}){
 
   const yes = document.getElementById('confirm-yes');
   const no = document.getElementById('confirm-no');
+  const choiceBox = document.getElementById('confirm-choices');
+  choiceBox.innerHTML = '';
+  choiceBox.style.display = choices ? '' : 'none';
+  // With several answers there is no default one, so the single button goes
+  // and Cancel is the only thing left in the actions row.
+  yes.style.display = choices ? 'none' : '';
   yes.textContent = confirmLabel || 'Continue';
   yes.classList.toggle('danger', !!danger);
   yes.classList.toggle('apply', !danger);
-
-  backdrop.classList.add('show');
-  yes.focus();
 
   return new Promise(resolve => {
     const finish = (answer) => {
@@ -2231,12 +2264,35 @@ function askConfirm({title, body, list, note, confirmLabel, danger}){
     const onOutside = (e) => { if(e.target === backdrop) finish(false); };
     const onKey = (e) => {
       if(e.key === 'Escape') finish(false);
-      if(e.key === 'Enter' && document.activeElement !== no) finish(true);
+      // Enter only means yes when there is one thing yes could mean.
+      if(e.key === 'Enter' && !choices && document.activeElement !== no) finish(true);
     };
     yes.addEventListener('click', onYes);
     no.addEventListener('click', onNo);
     backdrop.addEventListener('click', onOutside);
     document.addEventListener('keydown', onKey);
+
+    (choices || []).forEach(c => {
+      const button = document.createElement('button');
+      button.className = 'confirm-choice' + (c.danger ? ' danger' : '');
+      button.dataset.value = c.value;
+      const label = document.createElement('div');
+      label.className = 'cc-label';
+      label.textContent = c.label;
+      button.appendChild(label);
+      if(c.detail){
+        const detail = document.createElement('div');
+        detail.className = 'cc-detail';
+        detail.textContent = c.detail;
+        button.appendChild(detail);
+      }
+      button.addEventListener('click', () => finish(c.value));
+      choiceBox.appendChild(button);
+    });
+
+    backdrop.classList.add('show');
+    // Cancel, not a choice: nothing consequential should be one stray Enter away.
+    (choices ? no : yes).focus();
   });
 }
 
@@ -2283,7 +2339,7 @@ async function startScan(){
   showScanPanel();
 
   try{
-    const res = await fetch('/api/scan', {method: 'POST'});
+    const res = await fetch('/api/scan', {method: 'POST', headers: postHeaders()});
     const data = await res.json();
     if(!data.ok){
       alert(data.error || 'Could not start the scan.');
@@ -3293,11 +3349,32 @@ function groupSuggestions(checked){
 
 /* The whole selection goes to the server as one job, however many drives it
    spans, and the server runs the batches in order. */
-function runSuggestions(){
+async function runSuggestions(){
   const checked = checkedSuggestions();
   if(checked.length === 0) return;
 
   const batches = groupSuggestions(checked);
+  const moves = checked.filter(c => c.dataset.operation === 'move').length;
+
+  // The one path that can send many titles to several drives from a single
+  // press. Every other way of moving or deleting files ends in a confirm, and
+  // so does this one.
+  const ok = await askConfirm({
+    title: `Start ${checked.length} transfer${checked.length === 1 ? '' : 's'}?`,
+    body: moves
+      ? 'A move copies to the destination, checks it arrived, and only then '
+        + 'removes the original. A backup leaves the original alone.'
+      : 'Each title is copied into the destination’s redundancy folder. '
+        + 'Nothing is removed.',
+    list: batches.map(b =>
+      `${b.operation === 'copy' ? 'Back up' : 'Move'} ${b.node_ids.length} title(s) `
+      + `to ${driveDisplayName(b.target_drive_id) || b.target_drive_id}`).join('\n'),
+    note: 'Runs in the background. Progress shows in the panel at the bottom.',
+    confirmLabel: moves ? 'Move them' : 'Back them up',
+    danger: moves > 0
+  });
+  if(!ok) return;
+
   const button = document.getElementById('sugg-go');
   button.disabled = true;
   button.textContent = 'Starting…';
@@ -3417,11 +3494,17 @@ function renderSettings(){
   document.getElementById('set-config-path').textContent = 'Saved in ' + s.config_path;
 
   document.getElementById('set-db-path').value = s.db_path || '';
-  document.getElementById('set-db-note').textContent = s.db_env_override
-    ? 'Set by the MEDIAVAULT_DB environment variable, which wins over this. '
-      + 'Clear it there to change it here.'
-    : 'Where mediavault.db is kept. Changing it moves the file and uses the new '
-      + 'location from then on, including for backups.';
+  // A warning here is about where the database already is, so it is worth
+  // saying on open rather than waiting for someone to move it again.
+  const dbNote = document.getElementById('set-db-note');
+  dbNote.classList.toggle('warn', !!s.db_path_warning);
+  dbNote.textContent = s.db_path_warning
+    ? s.db_path_warning.split('\n')[0]
+    : (s.db_env_override
+      ? 'Set by the MEDIAVAULT_DB environment variable, which wins over this. '
+        + 'Clear it there to change it here.'
+      : 'Where mediavault.db is kept, including for backups. Changing it moves '
+        + 'the file there, or asks which to keep if one is already there.');
   document.getElementById('set-db-path').disabled = !!s.db_env_override;
 
   document.getElementById('set-backup-target').value = s.settings.backup_target || '';
@@ -3540,14 +3623,18 @@ document.addEventListener('input', function(e){
    before rather than after. */
 async function browseForDbFolder(){
   const note = document.getElementById('set-db-note');
+  // Whatever it warned about was the old path. Saving re-checks the new one.
+  note.classList.remove('warn');
   note.textContent = 'A folder picker has opened. It may be behind this window.';
   try{
-    const res = await fetch('/api/settings/browse?folder=1', {method: 'POST'});
+    const res = await fetch('/api/settings/browse?folder=1',
+                            {method: 'POST', headers: postHeaders()});
     const data = await res.json();
     if(!data.ok){ note.textContent = data.error || 'Could not open a picker.'; return; }
     if(data.cancelled){ note.textContent = 'Nothing picked.'; return; }
     document.getElementById('set-db-path').value = data.path;
-    note.textContent = 'Saving will move the database here and use it from then on.';
+    note.textContent = 'Saving will use this folder. If it already holds a '
+                     + 'mediavault.db you are asked which one to keep.';
   } catch(e){
     note.textContent = 'Could not reach the server.';
   }
@@ -3557,7 +3644,7 @@ async function browseForProgram(){
   const note = document.getElementById('set-path-note');
   note.textContent = 'A file picker has opened. It may be behind this window.';
   try{
-    const res = await fetch('/api/settings/browse', {method: 'POST'});
+    const res = await fetch('/api/settings/browse', {method: 'POST', headers: postHeaders()});
     const data = await res.json();
     if(!data.ok){ note.textContent = data.error || 'Could not open a file picker.'; return; }
     if(data.cancelled){ note.textContent = 'Nothing picked.'; return; }
@@ -3569,6 +3656,16 @@ async function browseForProgram(){
   } catch(e){
     note.textContent = 'Could not reach the server.';
   }
+}
+
+/* What changed about the database, or null if it stayed put. Three different
+   things can happen to it and they are not interchangeable. */
+function describeSettingsSave(data){
+  if(data.db_adopted) return `Now using the database at ${data.db_adopted}`;
+  if(!data.db_moved_to) return null;
+  return data.db_replaced
+    ? `Database moved to ${data.db_moved_to}, the old one kept as ${data.db_replaced}`
+    : `Database moved to ${data.db_moved_to}`;
 }
 
 function saveSettings(){
@@ -3588,10 +3685,13 @@ function saveSettings(){
     closeSettings();
     const names = {python: 'the built-in copier', robocopy: 'Robocopy',
                    teracopy: 'TeraCopy', fastcopy: 'FastCopy'};
-    flashToast(data.db_moved_to
-      ? `Database moved to ${data.db_moved_to}`
-      : (data.note
-         || `Copies will use ${names[data.effective_copy_tool] || data.effective_copy_tool}`));
+    flashToast(describeSettingsSave(data)
+      || data.note
+      || `Copies will use ${names[data.effective_copy_tool] || data.effective_copy_tool}`);
+    // Every count on the page came from the database that was in use a moment
+    // ago, so a different one means the page is showing the wrong library.
+    // Long enough for the toast saying which one to be read first.
+    if(data.db_adopted) setTimeout(reloadNow, 1200);
   }, () => { btn.disabled = false; });
 }
 
@@ -4157,12 +4257,19 @@ document.addEventListener('click', function(e){
   }, () => { btn.disabled = false; btn.textContent = original; });
 });
 
+/* Headers every POST needs. The server rejects a write without the token, so
+   a new POST that forgets this fails loudly with a message saying so. */
+function postHeaders(extra){
+  const meta = name => (document.querySelector(`meta[name="${name}"]`) || {}).content || '';
+  return Object.assign({[meta('mv-csrf-header')]: meta('mv-csrf-token')}, extra || {});
+}
+
 async function postJSON(url, body, onSuccess, onFailure){
   let res;
   try{
     res = await fetch(url, {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: postHeaders({'Content-Type': 'application/json'}),
       body: JSON.stringify(body)
     });
   } catch(err){
@@ -4186,6 +4293,25 @@ async function postJSON(url, body, onSuccess, onFailure){
     return;
   }
 
+  // A `confirm` in the reply means the server wants a question answered
+  // before it acts. The answer is re-sent with the same request, so the rule
+  // about when to ask, and what the answers mean, stays on the server.
+  if(data.confirm){
+    const answer = await askConfirm({
+      title: data.confirm.title,
+      body: escapeHtml(data.confirm.body).replace(/\n/g, '<br>'),
+      confirmLabel: data.confirm.label,
+      choices: data.confirm.choices,
+      danger: true
+    });
+    if(answer){
+      const answered = Object.assign({}, body, {[data.confirm.field]: answer});
+      return postJSON(url, answered, onSuccess, onFailure);
+    }
+    if(onFailure) onFailure();
+    return;
+  }
+
   if(!data.ok){
     alert('Failed: ' + (data.error || 'unknown error'));
     if(onFailure) onFailure();
@@ -4194,17 +4320,22 @@ async function postJSON(url, body, onSuccess, onFailure){
   if(onSuccess) onSuccess(data);
 }
 
-/* ---------- search ---------- */
-let searchTimer = null;
+/* ---------- search ----------
+   Every keystroke queries at once rather than waiting for a pause. The query
+   is a few indexed clauses over one table, so a delay bought nothing and only
+   made the box feel late. Replies can still arrive out of order, so each
+   carries the sequence number of the keystroke that asked for it and a reply
+   older than the newest one is dropped. */
+let searchSeq = 0;
 function onSearchInput(){
-  clearTimeout(searchTimer);
   const input = document.getElementById('search');
   const q = input.value.trim();
   // The clear button only exists while there is something to clear.
   document.getElementById('search-wrap').classList.toggle('filled', input.value.length > 0);
   const box = document.getElementById('search-results');
+  searchSeq++;                 // whatever is in flight is now stale
   if(!q){ box.classList.remove('show'); box.innerHTML=''; return; }
-  searchTimer = setTimeout(() => runSearch(q), 200);
+  runSearch(q, searchSeq);
 }
 
 function clearSearch(){
@@ -4213,11 +4344,12 @@ function clearSearch(){
   onSearchInput();
   input.focus();
 }
-async function runSearch(q){
+async function runSearch(q, seq){
   const box = document.getElementById('search-results');
   try{
     const res = await fetch('/search?q=' + encodeURIComponent(q));
     const data = await res.json();
+    if(seq !== searchSeq) return;
     if(!data.results || data.results.length === 0){
       box.innerHTML = '<div class="search-empty">No matches.</div>';
       box.classList.add('show');
@@ -4233,6 +4365,7 @@ async function runSearch(q){
     box.classList.add('show');
     searchCursor = -1;   // nothing highlighted until the user presses a key
   } catch(e){
+    if(seq !== searchSeq) return;
     box.innerHTML = '<div class="search-empty">Search failed - is dashboard.py still running?</div>';
     box.classList.add('show');
   }
@@ -4457,6 +4590,14 @@ function applyDriveFilters(){
    that looks things up by selector. */
 const DRIVE_SORTS = {
   label:   (a, b) => a.dataset.label.localeCompare(b.dataset.label),
+  // A disconnected drive keeps the letter it was last seen on, so this stays
+  // stable when something is unplugged. Only a drive that has never been
+  // connected has none, and those go at the end.
+  letter:  (a, b) => {
+    const la = a.dataset.letter, lb = b.dataset.letter;
+    if(!la !== !lb) return la ? -1 : 1;
+    return la.localeCompare(lb) || a.dataset.label.localeCompare(b.dataset.label);
+  },
   free:    (a, b) => Number(b.dataset.free) - Number(a.dataset.free),
   freepct: (a, b) => Number(b.dataset.freepct) - Number(a.dataset.freepct),
   used:    (a, b) => Number(b.dataset.used) - Number(a.dataset.used),
@@ -4886,7 +5027,7 @@ async function postTag(driveId, relPath, tag, action, onSuccess, onFailure){
   try{
     const res = await fetch('/api/tag', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: postHeaders({'Content-Type': 'application/json'}),
       body: JSON.stringify({drive_id: driveId, rel_path: relPath, tag: tag, action: action})
     });
     const data = await res.json();

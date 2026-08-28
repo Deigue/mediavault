@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import sqlite3
+import urllib.request
 from datetime import datetime, timezone
 
 import matching
@@ -46,31 +47,126 @@ def set_db_path(path):
     _db_path = path
 
 
-def move_database(new_path):
+def resolve_db_path(wanted):
+    """
+    The file `wanted` would put the database at. A folder gets the current
+    file name appended, since that is what the Settings picker hands back.
+    """
+    current = db_path()
+    path = os.path.abspath(wanted)
+    if os.path.isdir(path):
+        path = os.path.join(path, os.path.basename(current))
+    return path
+
+
+def describe_database(path):
+    """
+    What another database file holds, so it can be told apart from the current
+    one. None if there is no MediaVault database there.
+
+    Read-only: this runs on a file the user may well decide not to use, and
+    looking inside must not change it.
+    """
+    if not os.path.isfile(path):
+        return None
+    try:
+        uri = "file:" + urllib.request.pathname2url(os.path.abspath(path)) + "?mode=ro"
+        conn = sqlite3.connect(uri, uri=True)
+        try:
+            tables = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'")}
+            if not {"drives", "nodes"} <= tables:
+                return None
+            return {
+                "drives": conn.execute("SELECT COUNT(*) FROM drives").fetchone()[0],
+                "titles": conn.execute(
+                    "SELECT COUNT(*) FROM nodes WHERE depth = 2").fetchone()[0],
+                "tags": (conn.execute("SELECT COUNT(*) FROM tags").fetchone()[0]
+                         if "tags" in tables else 0),
+                "last_scanned": conn.execute(
+                    "SELECT MAX(last_scanned) FROM drives").fetchone()[0],
+                "size_bytes": os.path.getsize(path),
+            }
+        finally:
+            conn.close()
+    except (sqlite3.Error, OSError):
+        return None
+
+
+JOURNAL_SUFFIXES = ("-wal", "-shm")
+
+
+def _sideline(path):
+    """
+    Move a database out of the way and return where it went.
+
+    Renamed rather than deleted: replacing a database whose contents the user
+    has not seen needs a way back. The -wal goes with it, or SQLite would
+    apply the old one to whatever lands in its place.
+    """
+    kept = f"{path}.replaced-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    try:
+        os.replace(path, kept)
+    except OSError as e:
+        raise OSError(
+            f"The database already at {path} is in use, so nothing was "
+            f"changed: {e}\nClose whatever has it open and try again."
+        )
+    for suffix in JOURNAL_SUFFIXES:
+        if os.path.exists(path + suffix):
+            os.replace(path + suffix, kept + suffix)
+    return kept
+
+
+def _restore(kept, path):
+    """Undo _sideline, for a failure after it but before the new file landed."""
+    os.replace(kept, path)
+    for suffix in JOURNAL_SUFFIXES:
+        if os.path.exists(kept + suffix):
+            os.replace(kept + suffix, path + suffix)
+
+
+def adopt_database(new_path):
+    """
+    Read from the database already at new_path from here on.
+
+    Nothing is copied and nothing is deleted: the file currently in use stays
+    exactly where it is. Migrations run on the adopted file, since it may have
+    been written by an older version.
+    """
+    if describe_database(new_path) is None:
+        raise OSError(f"There is no MediaVault database at {new_path}.")
+    set_db_path(os.path.abspath(new_path))
+    init_db()
+    return db_path()
+
+
+def move_database(new_path, replace=False):
     """
     Move the database to another folder and read from there afterwards.
 
     Copies, checks the copy arrived, then removes the original, which is the
     same order moveops uses and for the same reason: a failure half way must
-    not be able to lose the file. Refuses rather than overwrites if something
-    is already at the destination.
+    not be able to lose the file. An occupied destination is refused unless
+    replace is set, which sidelines what is there instead of overwriting it.
+
+    Returns {'path': where it now lives, 'replaced': what was moved aside}.
 
     The WAL is checkpointed first, or recent commits would be left behind in
     a -wal file beside the old path.
     """
     current = db_path()
-    new_path = os.path.abspath(new_path)
-    if os.path.isdir(new_path):
-        new_path = os.path.join(new_path, os.path.basename(current))
+    new_path = resolve_db_path(new_path)
     if os.path.normcase(new_path) == os.path.normcase(current):
-        return current
+        return {"path": current, "replaced": None}
 
     folder = os.path.dirname(new_path)
     if folder and not os.path.isdir(folder):
         raise OSError(f"No such folder: {folder}")
-    if os.path.exists(new_path):
+    if os.path.exists(new_path) and not replace:
         raise OSError(f"There is already a file at {new_path}. Move or rename it first.")
 
+    replaced = None
     if os.path.exists(current):
         conn = sqlite3.connect(current)
         try:
@@ -94,13 +190,36 @@ def move_database(new_path):
                 "and try again."
             )
 
-        # Not os.replace: a rename cannot cross drives on Windows, and moving
-        # the database onto another drive is the main reason to do this.
-        shutil.copy2(current, new_path)
-        if os.path.getsize(new_path) != os.path.getsize(current):
-            os.remove(new_path)
-            raise OSError("The copy came up short, so nothing was moved.")
-        os.remove(current)
+        # Last, so a check above failing leaves the destination untouched.
+        if replace and os.path.exists(new_path):
+            replaced = _sideline(new_path)
+
+        def undo():
+            """Put the destination back as it was found."""
+            try:
+                os.remove(new_path)
+            except OSError:
+                pass
+            if replaced:
+                _restore(replaced, new_path)
+
+        try:
+            # Not os.replace: a rename cannot cross drives on Windows, and
+            # moving the database onto another drive is the point of this.
+            shutil.copy2(current, new_path)
+            if os.path.getsize(new_path) != os.path.getsize(current):
+                raise OSError("The copy came up short, so nothing was moved.")
+            os.remove(current)
+        except OSError as e:
+            # Either the copy failed, or it worked and something still holds
+            # the original open, usually a scan or a second dashboard. Both
+            # end the same way: leave the destination exactly as it was found
+            # rather than half moved.
+            undo()
+            raise OSError(
+                f"Nothing was moved: {e}\nWait for any scan to finish, close "
+                f"any other copy of the dashboard, and try again."
+            )
 
         # Rebuilt on demand, so they are cleared rather than carried across to
         # sit beside a database that is no longer there.
@@ -111,10 +230,11 @@ def move_database(new_path):
                 pass
 
     set_db_path(new_path)
-    return new_path
+    return {"path": new_path, "replaced": replaced}
 
 
-# Kept as a module attribute because callers already read db.DB_PATH.
+# Where the database was when this process started. A snapshot, so anything
+# that has to survive Settings pointing the app elsewhere calls db_path().
 DB_PATH = db_path()
 
 SCHEMA = """

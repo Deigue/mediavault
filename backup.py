@@ -23,7 +23,9 @@ import sys
 from datetime import datetime
 
 import config
-from db import DB_PATH
+# The module, not db.DB_PATH: that is a snapshot taken at import, and Settings
+# can point the app at a different file while this process is running.
+import db
 
 # Local scratch, replaced every run. Nothing here needs keeping.
 WORK_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".backup")
@@ -54,7 +56,7 @@ def snapshot(dest=SNAPSHOT_PATH):
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     if os.path.exists(dest):
         os.remove(dest)
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(db.db_path())
     try:
         conn.execute("VACUUM INTO ?", (dest,))
     finally:
@@ -112,7 +114,7 @@ def run(target=None):
             "rclone is not installed, or not on PATH. Install it from "
             "rclone.org and run 'rclone config' to connect your Drive."
         )
-    if not os.path.exists(DB_PATH):
+    if not os.path.exists(db.db_path()):
         raise BackupError("There is no database to back up yet.")
 
     try:
