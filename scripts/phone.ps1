@@ -218,6 +218,21 @@ function Invoke-Add {
         return
     }
 
+    # "about" only asks how full the disk is, and a phone will answer that for
+    # a folder it refuses to let anyone read. Listing is the test that matches
+    # what mounting actually needs.
+    $listing = & $rclone lsd "${name}:${path}" 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        & $rclone config delete $name | Out-Null
+        Write-Output ''
+        Write-Output "Logged in, but could not read $path, so nothing was saved:"
+        Write-Output "  $listing"
+        Write-Output ''
+        Write-Output 'The login works, so this is the SSH server having no access to'
+        Write-Output 'shared storage rather than anything about the connection.'
+        return
+    }
+
     $phones[$name] = [ordered]@{
         letter  = $letter
         label   = $label
