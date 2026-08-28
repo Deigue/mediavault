@@ -8,6 +8,7 @@ retried. The copy itself is done by whichever tool config.py resolves to.
 """
 
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -156,8 +157,15 @@ def plan_redundancy_copy(node_id, target_drive_id):
     if target_mount is None:
         raise MoveError(f"'{target_drive['label']}' is not connected.")
 
-    # A copy onto the source drive is allowed. copy_title says what that does
-    # and does not protect against.
+    # A copy on the source drive is not redundancy: the drive failing takes
+    # the original and the copy together, which is the case this exists to
+    # survive. Refused rather than offered with a caveat.
+    if node["drive_id"] == target_drive_id:
+        raise MoveError(
+            f"'{target_drive['label']}' already holds the original. A copy on "
+            f"the same drive is lost with it, so pick another drive."
+        )
+
     source_path = os.path.abspath(os.path.join(source_mount, node["rel_path"]))
     if not os.path.exists(source_path):
         raise MoveError(f"Not on disk any more:\n{source_path}")
@@ -204,7 +212,7 @@ def plan_redundancy_copy(node_id, target_drive_id):
     }
 
 
-def copy_title(plan, log=None, progress=None):
+def copy_title(plan, log=None, progress=None, on_file=None):
     """
     Back up a title. The source is never touched, and a copy that fails
     verification is left in place so it can be inspected.
@@ -222,7 +230,7 @@ def copy_title(plan, log=None, progress=None):
             "accident but not against the drive failing")
 
     os.makedirs(plan["target_dir"], exist_ok=True)
-    copy_tree(source, target, plan["is_dir"], log, progress)
+    copy_tree(source, target, plan["is_dir"], log, progress, on_file)
 
     if config.load().get("verify_after_copy", True):
         verify_copy(source, target, log)
@@ -248,21 +256,62 @@ def find_library_root(mount, root_prefix=None):
     return roots[0] if roots else None
 
 
-def _copy_with_robocopy(source, target, is_dir, log):
-    """robocopy only copies directories, so a single file is handled as
-    'this one file out of its parent folder'."""
+# robocopy prints a percentage for the file it is on when /NP is left off.
+# Anything else on the line is noise here.
+ROBOCOPY_PCT = re.compile(r"^\s*([\d.]+)%\s*$")
+
+
+def _copy_with_robocopy(source, target, is_dir, log, on_file=None):
+    """
+    robocopy only copies directories, so a single file is handled as 'this one
+    file out of its parent folder'.
+
+    Its output is read as it goes rather than collected at the end, which is
+    what turns the folder-watching estimate into the name of the file actually
+    being written and how far through it is.
+    """
+    common = ["/R:1", "/W:1", "/NDL", "/NJH", "/NJS"]
     if is_dir:
-        args = ["robocopy", source, target, "/E", "/R:1", "/W:1", "/NFL", "/NDL", "/NJH", "/NJS"]
+        args = ["robocopy", source, target, "/E"] + common
     else:
         args = ["robocopy", os.path.dirname(source), os.path.dirname(target),
-                os.path.basename(source), "/R:1", "/W:1", "/NFL", "/NDL", "/NJH", "/NJS"]
+                os.path.basename(source)] + common
 
-    result = subprocess.run(args, capture_output=True, text=True,
-                            creationflags=CREATE_NO_WINDOW)
-    if result.returncode > ROBOCOPY_OK_MAX:
-        raise MoveError(f"robocopy failed (exit {result.returncode}): "
-                        f"{(result.stdout or result.stderr or '').strip()[:400]}")
-    log(f"    robocopy finished (exit {result.returncode})")
+    tail = []
+    current = None
+    try:
+        process = subprocess.Popen(
+            args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, errors="replace", bufsize=1,
+            creationflags=CREATE_NO_WINDOW,
+        )
+    except OSError as e:
+        raise MoveError(f"Could not start robocopy: {e}")
+
+    with process:
+        for line in process.stdout:
+            line = line.rstrip("\r\n")
+            if not line.strip():
+                continue
+            percent = ROBOCOPY_PCT.match(line)
+            if percent:
+                if on_file:
+                    on_file(current, float(percent.group(1)))
+                continue
+            # A file line is "<size>\t<full path>"; anything else is a header
+            # or a summary and is only kept in case the copy fails.
+            parts = line.split("\t")
+            if len(parts) >= 2 and parts[-1].strip():
+                current = os.path.basename(parts[-1].strip())
+                if on_file:
+                    on_file(current, 0.0)
+            tail.append(line)
+            del tail[:-40]
+
+    if process.returncode > ROBOCOPY_OK_MAX:
+        raise MoveError(f"robocopy failed (exit {process.returncode}): "
+                        + "\n".join(tail)[-400:])
+    log(f"    robocopy finished (exit {process.returncode})")
 
 
 # Command lines for the external copiers, as (args builder, friendly name).
@@ -335,13 +384,17 @@ def _copy_with_python(source, target, is_dir, log):
     log("    copied")
 
 
-def copy_tree(source, target, is_dir, log, progress=None):
+def copy_tree(source, target, is_dir, log, progress=None, on_file=None):
     """
     Copy source to target using the configured tool.
 
     progress is called with (files_done, total_files, bytes_done,
     total_bytes) about once a second. It measures the target as it fills
     rather than parsing tool output, so it works with any copier.
+
+    on_file(name, percent) is the finer detail, and only robocopy can supply
+    it. Everything else leaves it alone and the folder-watching figures stand
+    on their own.
     """
     settings = config.load()
     tool, path, note = config.resolve_copy_tool(settings)
@@ -373,7 +426,7 @@ def copy_tree(source, target, is_dir, log, progress=None):
 
     try:
         if tool == "robocopy":
-            _copy_with_robocopy(source, target, is_dir, log)
+            _copy_with_robocopy(source, target, is_dir, log, on_file)
         elif tool in ("teracopy", "fastcopy", "custom"):
             _copy_with_external(tool, source, target, is_dir, path, log, total_bytes)
         else:
@@ -427,7 +480,7 @@ def verify_copy(source, target, log):
     log("    verified")
 
 
-def move_title(plan, log=None, progress=None):
+def move_title(plan, log=None, progress=None, on_file=None):
     """Carry out a planned move: copy, verify, then delete the source. Tags
     follow the title to its new path."""
     log = log or (lambda _m: None)
@@ -436,7 +489,7 @@ def move_title(plan, log=None, progress=None):
     log(f"  {plan['name']}")
     log(f"    {plan['source_label']} -> {plan['target_label']} / {plan['category']}")
 
-    copy_tree(source, target, plan["is_dir"], log, progress)
+    copy_tree(source, target, plan["is_dir"], log, progress, on_file)
 
     settings = config.load()
     if settings.get("verify_after_copy", True):

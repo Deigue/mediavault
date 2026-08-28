@@ -113,7 +113,7 @@ def is_anime_category(rel_path):
 
 def is_film_category(rel_path):
     """A category holding films, where one folder means one film."""
-    return tagging.bucket_for_category(category_of(rel_path))[0] in ("movies", "anime-movies")
+    return tagging.bucket_for_category(category_of(rel_path))[0] == "movies"
 
 
 def hints_for_drive(drive_id, conn):

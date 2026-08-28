@@ -166,55 +166,89 @@ def build_nodes(drive_root, root_path, dir_sizes, next_id, root_type, allowed_su
         nodes.append(record)
         return tmp_id, record
 
-    def walk(path, parent_tmp_id, depth, at_root=False):
+    def walk(root, at_root):
+        """
+        Iterative rather than recursive: a pathologically deep tree would hit
+        Python's recursion limit and take the scan down with it, and the depth
+        of someone's folders is not something we get to assume.
+
+        Each folder is visited twice, once to emit it and queue its children,
+        once on the way back up to fold in the newest timestamp found inside.
+        """
         try:
-            folder_created = os.stat(path).st_ctime
+            folder_created = os.stat(root).st_ctime
         except OSError:
             folder_created = None
-        my_id, my_record = make_node(path, parent_tmp_id, depth, is_dir=True,
-                                     created_at=folder_created)
-        newest = None
+        root_id, root_record = make_node(root, None, 0, is_dir=True,
+                                         created_at=folder_created)
 
-        try:
-            with os.scandir(path) as entries:
-                entry_list = list(entries)
-        except OSError:
-            return newest
+        newest_of = {root_id: None}
+        records = {root_id: root_record}
+        parent_of = {root_id: None}
 
-        for entry in entry_list:
-            if entry.name.startswith(".") or entry.name == driveid.MARKER_NAME:
+        def bump(tmp_id, stamp):
+            if stamp and (newest_of[tmp_id] is None or stamp > newest_of[tmp_id]):
+                newest_of[tmp_id] = stamp
+
+        # (path, tmp_id, depth, at_root) to descend, or (None, tmp_id) to close.
+        stack = [("close", root_id), ("open", root, root_id, 0, at_root)]
+        while stack:
+            frame = stack.pop()
+            if frame[0] == "close":
+                _, tmp_id = frame
+                records[tmp_id]["modified_at"] = newest_of[tmp_id]
+                parent = parent_of[tmp_id]
+                if parent is not None:
+                    bump(parent, newest_of[tmp_id])
                 continue
-            # At the redundancy root level, skip non-approved subfolders.
-            if at_root and allowed_subfolders is not None:
-                if entry.is_dir(follow_symlinks=False) and entry.path not in allowed_subfolders:
+
+            _, path, my_id, depth, is_root = frame
+            try:
+                with os.scandir(path) as entries:
+                    entry_list = list(entries)
+            except OSError:
+                continue
+
+            for entry in entry_list:
+                if entry.name.startswith(".") or entry.name == driveid.MARKER_NAME:
                     continue
-            if entry.is_dir(follow_symlinks=False):
-                child_newest = walk(entry.path, my_id, depth + 1)
-                if child_newest and (newest is None or child_newest > newest):
-                    newest = child_newest
-            elif entry.is_file():
-                if is_junk_name(entry.name):
-                    continue
-                try:
-                    stat = entry.stat()
-                    if is_junk_attrs(stat):
+                # At the redundancy root level, skip non-approved subfolders.
+                if is_root and allowed_subfolders is not None:
+                    if entry.is_dir(follow_symlinks=False) and entry.path not in allowed_subfolders:
                         continue
-                    fsize, created, modified = stat.st_size, stat.st_ctime, stat.st_mtime
-                except OSError:
-                    fsize, created, modified = 0, None, None
-                make_node(entry.path, my_id, depth + 1, is_dir=False, size_override=fsize,
-                          created_at=created, modified_at=modified)
-                # A downloaded file keeps its original mtime, so the moment it
-                # landed here is the creation time. Take whichever is later, so
-                # both a fresh download and an edited file count as recent.
-                for stamp in (created, modified):
-                    if stamp and (newest is None or stamp > newest):
-                        newest = stamp
+                if entry.is_dir(follow_symlinks=False):
+                    try:
+                        child_created = entry.stat().st_ctime
+                    except OSError:
+                        child_created = None
+                    child_id, child_record = make_node(
+                        entry.path, my_id, depth + 1, is_dir=True,
+                        created_at=child_created)
+                    newest_of[child_id] = None
+                    records[child_id] = child_record
+                    parent_of[child_id] = my_id
+                    stack.append(("close", child_id))
+                    stack.append(("open", entry.path, child_id, depth + 1, False))
+                elif entry.is_file():
+                    if is_junk_name(entry.name):
+                        continue
+                    try:
+                        stat = entry.stat()
+                        if is_junk_attrs(stat):
+                            continue
+                        fsize, created, modified = stat.st_size, stat.st_ctime, stat.st_mtime
+                    except OSError:
+                        fsize, created, modified = 0, None, None
+                    make_node(entry.path, my_id, depth + 1, is_dir=False, size_override=fsize,
+                              created_at=created, modified_at=modified)
+                    # A downloaded file keeps its original mtime, so the moment
+                    # it landed here is the creation time. Take whichever is
+                    # later, so a fresh download and an edited file both count
+                    # as recent.
+                    for stamp in (created, modified):
+                        bump(my_id, stamp)
 
-        my_record["modified_at"] = newest
-        return newest
-
-    walk(root_path, None, 0, at_root=(allowed_subfolders is not None))
+    walk(root_path, at_root=(allowed_subfolders is not None))
     return nodes, counter[0]
 
 
@@ -284,8 +318,14 @@ def seed_default_tags(drive_id, nodes):
 
 
 def resolve_label(drive_id, drive_root, label=None):
-    """What to call this drive, best source first: explicit, remembered from a
-    previous scan, volume label, drive letter. Returns (label, source)."""
+    """
+    What to call this drive, best source first: explicit, remembered from a
+    previous scan, volume label, drive letter. Returns (label, source).
+
+    The letter is never part of the name. It is stored separately and shown
+    beside the label where it helps, because a letter baked into a name goes
+    stale the moment Windows reassigns it.
+    """
     if label:
         return label, "provided"
 
@@ -294,13 +334,11 @@ def resolve_label(drive_id, drive_root, label=None):
     if remembered:
         return remembered, "remembered from a previous scan"
 
-    drive_letter = os.path.splitdrive(drive_root)[0]  # e.g. "D:"
     vol_label = driveid.get_drive_name(drive_root)
     if vol_label:
-        auto = f"{vol_label} ({drive_letter})" if drive_letter else vol_label
-    else:
-        auto = drive_letter or drive_root
-    return auto, "auto-detected - pass --label to set a custom name"
+        return vol_label, "auto-detected - pass --label to set a custom name"
+    drive_letter = os.path.splitdrive(drive_root)[0]
+    return (drive_letter or drive_root), "auto-detected - pass --label to set a custom name"
 
 
 def remembered_scan_options(drive_id):
@@ -369,9 +407,16 @@ def scan_and_store(drive_path, label=None, root_prefix=DEFAULT_ROOT_PREFIX,
         "redundancy_prefix": redundancy_prefix,
         "redundancy_include": ",".join(redundancy_include),
     }
-    db.upsert_drive(drive_id, label, total, used, free, drive_root, scan_options)
+    db.upsert_drive(drive_id, label, total, used, free, drive_root, scan_options,
+                    last_letter=drive_letter_for(drive_root))
     db.replace_nodes(drive_id, nodes)
     seed_default_tags(drive_id, nodes)
+    # Tags are keyed by path, so anything renamed or moved outside MediaVault
+    # leaves a row pointing nowhere. This is the moment we know for certain
+    # which paths are gone, so it is the moment to drop them.
+    orphaned = db.prune_orphan_tags(drive_id)
+    if orphaned:
+        log(f"Removed {orphaned} tag(s) on paths that no longer exist.")
     # A scan is the moment a drive may have appeared or moved letter, so the
     # cheap cached answer stops being good enough.
     invalidate_connected_cache()

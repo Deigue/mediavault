@@ -24,6 +24,9 @@ DEFAULTS = {
     "verify_after_copy": True,
     # rclone path for the Backup button, e.g. "gdrive:Backups/PC". Empty is off.
     "backup_target": "",
+    # Where mediavault.db lives. Empty means next to the code. MEDIAVAULT_DB
+    # overrides both.
+    "db_path": "",
 }
 
 

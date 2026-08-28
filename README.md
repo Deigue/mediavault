@@ -34,8 +34,7 @@ and again whenever you add, move or delete files.
 - **See what is backed up**: green shield for a complete copy elsewhere,
   amber for partial, purple when a title is merely split across drives.
 - **Filter and sort** drives by type, and filter titles by backup state.
-- **Count what you have**, by category, for the library, each drive and each
-  folder.
+- **Count what you have**, by category, for the library, each drive and each folder
 - **Spot old folder layouts**, such as an anime with its seasons buried
   inside it, flagged with a wrench so you can tidy them up.
 - **Get suggestions** for what to move or back up, each with its reasoning.
@@ -77,8 +76,7 @@ category:
 I:\99_Redundancy\Anime\Attack on Golem
 ```
 
-Backing up to the drive a title is already on protects against deleting it by
-accident, not against the drive failing, and the target list says so.
+Create backups across drives to mitigate losing files to drive failures.
 
 Set the copy program in **Settings**: `auto`, `robocopy`, `teracopy`,
 `fastcopy`, or the built-in `python` copier. A missing tool falls back to the

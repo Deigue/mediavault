@@ -5,11 +5,117 @@ One file, mediavault.db. Each scan replaces that drive's previous snapshot,
 so the data always reflects the last time the drive was scanned.
 """
 
-import sqlite3
 import os
+import re
+import shutil
+import sqlite3
 from datetime import datetime, timezone
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mediavault.db")
+import matching
+
+DEFAULT_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mediavault.db")
+
+# MEDIAVAULT_DB wins, then whatever Settings last saved, then next to the
+# code. Read through a function so a change at runtime takes effect without a
+# restart, but cached because every query asks.
+_db_path = None
+
+
+def db_path():
+    global _db_path
+    if _db_path is None:
+        _db_path = os.environ.get("MEDIAVAULT_DB") or _stored_db_path() or DEFAULT_DB_PATH
+    return _db_path
+
+
+def _stored_db_path():
+    """Read the saved path without importing config, which imports nothing but
+    would still make this module depend on it."""
+    try:
+        import json
+        setting = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+        with open(setting, "r", encoding="utf-8") as f:
+            return (json.load(f).get("db_path") or "").strip() or None
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def set_db_path(path):
+    """Point at a different database file from here on."""
+    global _db_path
+    _db_path = path
+
+
+def move_database(new_path):
+    """
+    Move the database to another folder and read from there afterwards.
+
+    Copies, checks the copy arrived, then removes the original, which is the
+    same order moveops uses and for the same reason: a failure half way must
+    not be able to lose the file. Refuses rather than overwrites if something
+    is already at the destination.
+
+    The WAL is checkpointed first, or recent commits would be left behind in
+    a -wal file beside the old path.
+    """
+    current = db_path()
+    new_path = os.path.abspath(new_path)
+    if os.path.isdir(new_path):
+        new_path = os.path.join(new_path, os.path.basename(current))
+    if os.path.normcase(new_path) == os.path.normcase(current):
+        return current
+
+    folder = os.path.dirname(new_path)
+    if folder and not os.path.isdir(folder):
+        raise OSError(f"No such folder: {folder}")
+    if os.path.exists(new_path):
+        raise OSError(f"There is already a file at {new_path}. Move or rename it first.")
+
+    if os.path.exists(current):
+        conn = sqlite3.connect(current)
+        try:
+            # The result has to be checked. A blocked checkpoint returns a
+            # busy flag rather than raising, and moving only the .db while
+            # committed rows are still in the -wal loses them silently.
+            row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        finally:
+            conn.close()
+        if row is not None and row[0] != 0:
+            raise OSError(
+                "Some writes are still pending and could not be flushed, so "
+                "moving now would lose them. Close any other copy of the "
+                "dashboard and try again."
+            )
+        wal = current + "-wal"
+        if os.path.exists(wal) and os.path.getsize(wal) > 0:
+            raise OSError(
+                "There are still unflushed writes beside the database, so "
+                "nothing was moved. Close any other copy of the dashboard "
+                "and try again."
+            )
+
+        # Not os.replace: a rename cannot cross drives on Windows, and moving
+        # the database onto another drive is the main reason to do this.
+        shutil.copy2(current, new_path)
+        if os.path.getsize(new_path) != os.path.getsize(current):
+            os.remove(new_path)
+            raise OSError("The copy came up short, so nothing was moved.")
+        os.remove(current)
+
+        # Rebuilt on demand, so they are cleared rather than carried across to
+        # sit beside a database that is no longer there.
+        for suffix in ("-wal", "-shm"):
+            try:
+                os.remove(current + suffix)
+            except OSError:
+                pass
+
+    set_db_path(new_path)
+    return new_path
+
+
+# Kept as a module attribute because callers already read db.DB_PATH.
+DB_PATH = db_path()
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS drives (
@@ -44,6 +150,8 @@ CREATE INDEX IF NOT EXISTS idx_nodes_parent ON nodes(parent_id);
 CREATE INDEX IF NOT EXISTS idx_nodes_name ON nodes(name);
 -- Serves the shallow (depth <= 2) page render and the depth-2 duplicate scan.
 CREATE INDEX IF NOT EXISTS idx_nodes_drive_depth ON nodes(drive_id, depth);
+-- The index on search_name is created by _migrate_schema, which is where that
+-- column is added; it cannot be indexed before it exists.
 
 -- Keyed by (drive_id, rel_path), not node id: nodes are wiped and reinserted
 -- on every rescan so their ids are not stable, but paths are. Tags survive a
@@ -57,14 +165,33 @@ CREATE TABLE IF NOT EXISTS tags (
 """
 
 
+# Set by dashboard.py to a callable returning the connection for the request
+# in flight, so a page render opens one instead of dozens. Left None outside a
+# request, where every caller gets its own as before.
+request_connection = None
+
+
 def get_conn():
     """
     A connection with the per-connection pragmas set.
 
-    journal_mode is not among them: WAL is a property of the file, set once by
-    init_db, and asking for it on every connect takes a lock for nothing.
+    Inside a web request this hands back the one already open, so the callers
+    below can keep opening and closing freely without paying for it. Closing a
+    shared connection is a no-op; see _Shared.
+
+    journal_mode is not among the pragmas: WAL is a property of the file, set
+    once by init_db, and asking for it on every connect takes a lock for
+    nothing.
     """
-    conn = sqlite3.connect(DB_PATH, timeout=15)
+    if request_connection is not None:
+        shared = request_connection()
+        if shared is not None:
+            return shared
+    return new_conn()
+
+
+def new_conn():
+    conn = sqlite3.connect(db_path(), timeout=15)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     # Lets a blocked writer wait its turn rather than failing instantly.
@@ -73,12 +200,40 @@ def get_conn():
     return conn
 
 
+class SharedConnection:
+    """
+    A connection that ignores close().
+
+    Every function here opens and closes its own connection, which is the
+    right shape for a script and wasteful for a page render that calls twenty
+    of them. Wrapping one connection so close() does nothing lets the request
+    own its lifetime without rewriting each caller.
+    """
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def close(self):
+        pass
+
+    def real_close(self):
+        self._conn.close()
+
+
 # Columns added after the first release, since SQLite has no ADD COLUMN IF
 # NOT EXISTS. For a folder, modified_at is the newest file anywhere inside,
 # which is what tells a show still receiving episodes from a settled one.
 ADDED_NODE_COLUMNS = {
     "created_at": "REAL",    # unix time, when it first appeared on the drive
     "modified_at": "REAL",   # unix time, newest content anywhere inside it
+    # name with release noise and punctuation stripped, so a search matches
+    # how a title is written rather than how it is spelled. Season markers
+    # are kept and canonicalised, since "Season 2" is part of the real title.
+    # See matching.title_key.
+    "search_name": "TEXT",
 }
 
 ADDED_DRIVE_COLUMNS = {
@@ -87,6 +242,11 @@ ADDED_DRIVE_COLUMNS = {
     "root_prefix": "TEXT",
     "redundancy_prefix": "TEXT",
     "redundancy_include": "TEXT",
+    # The letter this drive was last seen on, e.g. "L:". Kept apart from the
+    # label so the label stays a plain name: a letter baked into the name goes
+    # stale, and means nothing on another machine. Shown beside the label
+    # wherever knowing which drive to reach for actually helps.
+    "last_letter": "TEXT",
     # A drivetypes value, or NULL to read it off the volume label each time.
     # A value here was set by hand and always wins.
     "drive_type": "TEXT",
@@ -95,17 +255,55 @@ ADDED_DRIVE_COLUMNS = {
 }
 
 
+# Matches a drive letter in brackets at the end of a label, which is how
+# auto-detected names used to be built, e.g. "Toshiba (L:)".
+BAKED_LETTER = re.compile(r"\s*\(\s*([A-Za-z]):?\\?\s*\)\s*$")
+
+
+def _split_baked_letter(conn):
+    """
+    Move a drive letter out of any label that still has one baked in.
+
+    Old auto labels were built as "name (D:)", which goes stale the moment
+    Windows hands that letter to something else, and means nothing at all on
+    another machine. The letter is kept in last_letter instead.
+    """
+    for row in conn.execute("SELECT drive_id, label, last_letter FROM drives"):
+        match = BAKED_LETTER.search(row["label"] or "")
+        if not match:
+            continue
+        conn.execute(
+            "UPDATE drives SET label = ?, last_letter = COALESCE(last_letter, ?) "
+            "WHERE drive_id = ?",
+            (BAKED_LETTER.sub("", row["label"]).strip(),
+             match.group(1).upper() + ":", row["drive_id"]),
+        )
+
+
 def _migrate_schema(conn):
     """Add any columns missing from an older database file."""
     existing = {r["name"] for r in conn.execute("PRAGMA table_info(drives)")}
+    added = []
     for column, coltype in ADDED_DRIVE_COLUMNS.items():
         if column not in existing:
             conn.execute(f"ALTER TABLE drives ADD COLUMN {column} {coltype}")
+            added.append(column)
 
     existing = {r["name"] for r in conn.execute("PRAGMA table_info(nodes)")}
     for column, coltype in ADDED_NODE_COLUMNS.items():
         if column not in existing:
             conn.execute(f"ALTER TABLE nodes ADD COLUMN {column} {coltype}")
+
+    if "last_letter" in added:
+        _split_baked_letter(conn)
+    # Backfill in one pass rather than making search cope with NULLs.
+    missing = conn.execute(
+        "SELECT id, name FROM nodes WHERE search_name IS NULL").fetchall()
+    if missing:
+        conn.executemany(
+            "UPDATE nodes SET search_name = ? WHERE id = ?",
+            [(matching.title_key(r["name"]), r["id"]) for r in missing])
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_search ON nodes(search_name)")
 
 
 def init_db():
@@ -124,17 +322,24 @@ def now_iso():
 
 
 def upsert_drive(drive_id, label, total_bytes, used_bytes, free_bytes, last_seen_path,
-                 scan_options=None):
+                 scan_options=None, last_letter=None):
     """Record a drive's capacity and label after a scan. scan_options is
     remembered for later rescans; None leaves what is stored alone."""
     opts = scan_options or {}
     conn = get_conn()
+    # A letter belongs to one drive at a time. Whoever was last seen here has
+    # moved or gone, so their claim on it is stale and is dropped.
+    if last_letter:
+        conn.execute(
+            "UPDATE drives SET last_letter = NULL WHERE last_letter = ? AND drive_id != ?",
+            (last_letter, drive_id),
+        )
     conn.execute(
         """
         INSERT INTO drives (drive_id, label, total_bytes, used_bytes, free_bytes,
-                            last_seen_path, last_scanned,
+                            last_seen_path, last_scanned, last_letter,
                             root_prefix, redundancy_prefix, redundancy_include)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(drive_id) DO UPDATE SET
             label=excluded.label,
             total_bytes=excluded.total_bytes,
@@ -142,11 +347,13 @@ def upsert_drive(drive_id, label, total_bytes, used_bytes, free_bytes, last_seen
             free_bytes=excluded.free_bytes,
             last_seen_path=excluded.last_seen_path,
             last_scanned=excluded.last_scanned,
+            last_letter=COALESCE(excluded.last_letter, drives.last_letter),
             root_prefix=COALESCE(excluded.root_prefix, drives.root_prefix),
             redundancy_prefix=COALESCE(excluded.redundancy_prefix, drives.redundancy_prefix),
             redundancy_include=COALESCE(excluded.redundancy_include, drives.redundancy_include)
         """,
         (drive_id, label, total_bytes, used_bytes, free_bytes, last_seen_path, now_iso(),
+         last_letter,
          opts.get("root_prefix"), opts.get("redundancy_prefix"), opts.get("redundancy_include")),
     )
     conn.commit()
@@ -175,12 +382,12 @@ def replace_nodes(drive_id, node_list):
         cur.execute(
             """
             INSERT INTO nodes (drive_id, parent_id, name, rel_path, is_dir, size_bytes,
-                               depth, root_type, created_at, modified_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                               depth, root_type, created_at, modified_at, search_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (drive_id, real_parent_id, n["name"], n["rel_path"], int(n["is_dir"]), n["size_bytes"],
              n["depth"], n.get("root_type", "library"),
-             n.get("created_at"), n.get("modified_at")),
+             n.get("created_at"), n.get("modified_at"), matching.title_key(n["name"])),
         )
         tmp_to_real[n["tmp_id"]] = cur.lastrowid
 
@@ -461,20 +668,40 @@ def get_largest_folders(drive_id, limit=8, min_depth=2):
 
 def search_nodes(query, limit=200):
     """
-    Search names across every drive. Each result carries enough to stand on
-    its own in the result list, plus its ancestor ids so clicking it can
-    expand the tree straight there.
+    Search names across every drive, matching how titles are actually written.
+
+    Two passes. The index carries a normalised form of every name, so
+    "prison break" reaches "Prison.Break.S01E03.1080p" and every word of the
+    query has to be present. A plain substring match runs alongside it, which
+    is what keeps a search for a release group or a year working.
+
+    Each result carries enough to stand on its own in the result list, plus
+    its ancestor ids so clicking it can expand the tree straight there.
     """
     conn = get_conn()
+    wanted = matching.title_key(query).split()
+
+    clauses = ["nodes.name LIKE ?"]
+    params = [f"%{query}%"]
+    for word in wanted[:6]:          # a long query is already selective
+        clauses.append("nodes.search_name LIKE ?")
+        params.append(f"%{word}%")
+    # Substring OR (every normalised word), which is the union of the two
+    # passes without needing two queries.
+    where = f"({clauses[0]})"
+    if len(clauses) > 1:
+        where += " OR (" + " AND ".join(clauses[1:]) + ")"
+
     rows = conn.execute(
-        """
-        SELECT nodes.*, drives.label as drive_label
+        f"""
+        SELECT nodes.*, drives.label as drive_label,
+               drives.last_letter as drive_letter_last
         FROM nodes JOIN drives ON nodes.drive_id = drives.drive_id
-        WHERE nodes.name LIKE ?
-        ORDER BY nodes.size_bytes DESC
+        WHERE {where}
+        ORDER BY (nodes.depth = 2) DESC, nodes.size_bytes DESC
         LIMIT ?
         """,
-        (f"%{query}%", limit),
+        params + [limit],
     ).fetchall()
     results = [dict(r) for r in rows]
     if not results:
@@ -534,6 +761,56 @@ def set_tag_bulk(items, tag, action):
     return len(pairs)
 
 
+def copies_of(drive_id, rel_path):
+    """
+    Every other place this title exists, as (drive_id, rel_path).
+
+    Matched the same way the shield matches, so what counts as "the same
+    title" is one rule rather than two that can disagree.
+    """
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT name FROM nodes WHERE drive_id = ? AND rel_path = ? AND depth = 2",
+        (drive_id, rel_path),
+    ).fetchone()
+    if row is None:
+        conn.close()
+        return []
+
+    key = matching.title_key(row["name"]) or row["name"].strip().lower()
+    others = conn.execute(
+        "SELECT drive_id, rel_path, name FROM nodes WHERE depth = 2 AND search_name = ?",
+        (key,),
+    ).fetchall()
+    conn.close()
+    return [(r["drive_id"], r["rel_path"]) for r in others
+            if not (r["drive_id"] == drive_id and r["rel_path"] == rel_path)]
+
+
+def prune_orphan_tags(drive_id):
+    """
+    Drop tags on paths this drive no longer has, and return how many went.
+
+    Only ever called straight after a successful scan of that one drive, so
+    "not in nodes" means the scan looked and the path was genuinely gone. A
+    drive that is merely unplugged keeps every node and every tag: forgetting
+    a drive is a separate, deliberate act.
+    """
+    conn = get_conn()
+    cur = conn.execute(
+        """
+        DELETE FROM tags
+        WHERE drive_id = ?
+          AND rel_path NOT IN (SELECT rel_path FROM nodes WHERE drive_id = ?)
+        """,
+        (drive_id, drive_id),
+    )
+    removed = cur.rowcount
+    conn.commit()
+    conn.close()
+    return removed
+
+
 def clear_tags_for_drive(drive_id):
     """Drop every tag on a drive. Used by the category-rename migration, where
     the old tag rows are keyed to paths that no longer exist."""
@@ -557,16 +834,21 @@ def get_duplicate_map():
     rows = conn.execute(
         """
         SELECT nodes.id, nodes.name, nodes.rel_path, nodes.drive_id, nodes.root_type,
-               nodes.size_bytes, drives.label as drive_label
+               nodes.size_bytes, drives.label as drive_label,
+               drives.last_letter as drive_letter_last
         FROM nodes JOIN drives ON nodes.drive_id = drives.drive_id
         WHERE nodes.is_dir = 1 AND nodes.depth = 2
         """
     ).fetchall()
     conn.close()
 
+    # Grouped on the normalised name, so "Better Call Paul" and
+    # "Better.Call.Paul.1080p.x265-RARBG" are recognised as one title. Season
+    # markers are deliberately kept: without them one season would be reported
+    # as a backup of another, which is the worst mistake this could make.
     groups = {}
     for r in rows:
-        key = r["name"].strip().lower()
+        key = matching.title_key(r["name"]) or r["name"].strip().lower()
         groups.setdefault(key, []).append(dict(r))
 
     # Child names for titles with a twin, so a partial copy reads as
@@ -596,6 +878,7 @@ def get_duplicate_map():
                     "id": o["id"],
                     "drive_id": o["drive_id"],
                     "drive_label": o["drive_label"],
+                    "drive_letter_last": o["drive_letter_last"],
                     "rel_path": o["rel_path"],
                     "root_type": o["root_type"],
                     "size_bytes": o["size_bytes"],
@@ -679,6 +962,23 @@ def redundancy_summaries():
         out.setdefault(r["drive_id"], {"has_root": False})
         out[r["drive_id"]].update(titles=r["titles"], size_bytes=r["bytes"])
     return out
+
+
+def indexed_bytes_by_drive():
+    """
+    How much of each drive is media MediaVault knows about.
+
+    Sums the root folders only, since a folder's size is already the recursive
+    total of everything inside it. Covers both the library and the redundancy
+    roots, so what is left over is genuinely everything else on the drive.
+    """
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT drive_id, COALESCE(SUM(size_bytes), 0) AS bytes "
+        "FROM nodes WHERE depth = 0 GROUP BY drive_id"
+    ).fetchall()
+    conn.close()
+    return {r["drive_id"]: r["bytes"] for r in rows}
 
 
 def title_counts_by_category():

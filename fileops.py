@@ -9,6 +9,7 @@ inside that drive. Nothing acts on a path handed in by the caller.
 
 import os
 import shutil
+import time
 
 import db
 import scanner
@@ -16,6 +17,27 @@ import scanner
 
 class FileOpError(Exception):
     """Something went wrong that the user should be told about."""
+
+
+def in_session_zero():
+    """
+    Is this process running in Windows session 0, which has no desktop?
+
+    A scheduled task set to "run whether user is logged on or not" lands
+    there. The dashboard itself works, but anything it launches has nowhere
+    to draw: opening a folder does nothing and playing a file gives audio
+    from an invisible window. Worth saying rather than appearing broken.
+    """
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        session = ctypes.c_ulong()
+        ok = ctypes.windll.kernel32.ProcessIdToSessionId(
+            ctypes.windll.kernel32.GetCurrentProcessId(), ctypes.byref(session))
+        return bool(ok) and session.value == 0
+    except Exception:
+        return False
 
 
 def resolve_node_path(node_id):
@@ -51,12 +73,85 @@ def resolve_node_path(node_id):
     return abs_path, node, root
 
 
+ASFW_ANY = -1
+
+# How long to watch for the window the launch produced. A file manager or a
+# player is up well inside this; waiting longer would risk grabbing a window
+# that has nothing to do with us.
+FOREGROUND_WAIT_SECONDS = 2.0
+FOREGROUND_POLL = 0.05
+
+
+def _visible_windows():
+    """Handles of every visible top-level window, as a set."""
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    found = set()
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def collect(hwnd, _lparam):
+        if user32.IsWindowVisible(hwnd) and user32.GetWindowTextLengthW(hwnd) > 0:
+            found.add(hwnd)
+        return True
+
+    user32.EnumWindows(collect, 0)
+    return found
+
+
+def _force_foreground(hwnd):
+    """
+    Bring a window to the front from a process that has no right to.
+
+    Windows only lets the process that already owns the foreground hand it
+    over. This one owns nothing: it is a background service and the browser
+    has focus. Attaching to the foreground thread's input queue for the call
+    is the documented way round that, and is what every launcher does.
+    """
+    import ctypes
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+
+    SW_RESTORE = 9
+    ours = kernel32.GetCurrentThreadId()
+    front = user32.GetForegroundWindow()
+    theirs = user32.GetWindowThreadProcessId(front, None) if front else 0
+
+    attached = bool(theirs) and bool(user32.AttachThreadInput(ours, theirs, True))
+    try:
+        if user32.IsIconic(hwnd):
+            user32.ShowWindow(hwnd, SW_RESTORE)
+        user32.AllowSetForegroundWindow(ASFW_ANY)
+        user32.BringWindowToTop(hwnd)
+        user32.SetForegroundWindow(hwnd)
+    finally:
+        if attached:
+            user32.AttachThreadInput(ours, theirs, False)
+
+
+def _raise_new_window(before):
+    """Wait briefly for a window that was not there before, and front it."""
+    deadline = time.monotonic() + FOREGROUND_WAIT_SECONDS
+    while time.monotonic() < deadline:
+        new = _visible_windows() - before
+        if new:
+            # Newest handle last is not guaranteed, but any of them is the
+            # thing we just launched, and there is normally exactly one.
+            _force_foreground(max(new))
+            return True
+        time.sleep(FOREGROUND_POLL)
+    return False
+
+
 def open_in_shell(node_id):
     """
-    Open a node the way double clicking it in Windows would.
+    Open a node the way double clicking it in Windows would, in front.
 
     Folders open in whatever file manager is registered, files in whatever
-    application handles that type. Returns the path that was opened.
+    application handles that type. The launched window is brought forward
+    explicitly: left alone it opens behind the browser and only blinks in the
+    taskbar, which reads as nothing having happened.
     """
     abs_path, _node, _root = resolve_node_path(node_id)
 
@@ -64,9 +159,21 @@ def open_in_shell(node_id):
         raise FileOpError("Opening files is only supported on Windows.")
 
     try:
+        before = _visible_windows()
+    except Exception:
+        before = None
+
+    try:
         os.startfile(abs_path)      # noqa: S606 - this is the whole point
     except OSError as e:
         raise FileOpError(f"Windows could not open it: {e}")
+
+    # Best effort. Failing to raise it is a worse experience, never an error.
+    if before is not None:
+        try:
+            _raise_new_window(before)
+        except Exception:
+            pass
     return abs_path
 
 

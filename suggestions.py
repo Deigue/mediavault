@@ -80,6 +80,11 @@ def age_of(title):
     return days_since(newest)
 
 
+def _with_letter(drive_row, mount):
+    letter = scanner.drive_letter_for(mount) or drive_row.get("last_letter")
+    return f"{drive_row['label']} ({letter})" if letter else drive_row["label"]
+
+
 def describe_drives(connected):
     """Every known drive with the facts the ranking needs."""
     out = []
@@ -93,7 +98,9 @@ def describe_drives(connected):
         space = drivetypes.evaluate(drive_type, d["free_bytes"], d["total_bytes"], cold)
         out.append({
             "drive_id": d["drive_id"],
-            "label": d["label"],
+            # The letter is shown beside the label, so it has to travel with
+            # it: live where the drive is plugged in, remembered otherwise.
+            "label": _with_letter(d, mount),
             "mount": mount,
             "connected": mount is not None,
             "type": drive_type,
@@ -293,18 +300,19 @@ def rank_backup_targets(source_drive_id, size_needed, drives=None, counts=None):
     for d in drives:
         if not d["connected"]:
             continue
+        # A copy on the source drive is not redundancy. The drive failing
+        # takes both, which is the case this exists to survive.
+        if d["drive_id"] == source_drive_id:
+            continue
         if d["free_bytes"] - size_needed <= 0:
             continue
 
         held = counts.get(d["drive_id"], {}).get("titles", 0)
-        same_drive = d["drive_id"] == source_drive_id
+        same_drive = False
         is_ssd = d["type"] == drivetypes.SSD
         is_flash = drivetypes.is_flash(d["type"])
 
-        if same_drive:
-            why = ("Same drive as the original, so this guards against deleting "
-                   "it by accident and nothing else. A drive failure takes both.")
-        elif is_flash:
+        if is_flash:
             why = (f"A {drivetypes.rule_for(d['type'])['label'].lower()}, so treat "
                    f"this as a spare copy rather than protection. Unpowered flash "
                    f"has no stated retention and tends to fail all at once.")

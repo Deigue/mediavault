@@ -12,8 +12,9 @@ import gzip
 import os
 import subprocess
 import sys
+from datetime import datetime, timezone
 
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, g, has_request_context, render_template, request, jsonify
 import backup
 import config
 import db
@@ -36,6 +37,39 @@ app.config["TEMPLATES_AUTO_RELOAD"] = True
 # size. Worth it even over loopback: the browser spends less time reading the
 # socket before it can start parsing.
 GZIP_MIN_BYTES = 4096
+
+
+def _request_connection():
+    """
+    One database connection per request, shared by every db.py call in it.
+
+    Those functions each open and close their own, which suits a script but
+    means a page render pays for twenty connects. The wrapper ignores close(),
+    so nothing else had to change.
+    """
+    if not has_request_context():
+        return None
+    shared = getattr(g, "_db", None)
+    if shared is None:
+        shared = db.SharedConnection(db.new_conn())
+        g._db = shared
+    return shared
+
+
+db.request_connection = _request_connection
+
+
+def _close_request_connection():
+    """Let go of the database mid-request. Only the move needs this, and only
+    because a file cannot be removed on Windows while a handle is open."""
+    shared = g.pop("_db", None) if has_request_context() else None
+    if shared is not None:
+        shared.real_close()
+
+
+@app.teardown_request
+def close_connection(_exc):
+    _close_request_connection()
 
 
 @app.after_request
@@ -67,8 +101,61 @@ def human(n_bytes):
     return f"{int(n)} B"
 
 
-# Marks a title deliberately only part backed up, so it stops nagging.
-PARTIAL_OK_TAG = "partial-ok"
+PARTIAL_OK_TAG = tagging.PARTIAL_OK_TAG
+
+
+def ago(iso_timestamp):
+    """
+    "34m ago", "yesterday", "4w ago". The exact stamp goes in the tooltip.
+
+    A timestamp is precise and unreadable; what you actually want to know is
+    whether this was recent enough to trust.
+    """
+    if not iso_timestamp:
+        return "never"
+    try:
+        when = datetime.fromisoformat(iso_timestamp)
+    except ValueError:
+        return iso_timestamp[:16]
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+
+    seconds = (datetime.now(timezone.utc) - when).total_seconds()
+    if seconds < 0:
+        return "just now"
+    minutes = seconds / 60
+    if minutes < 1:
+        return "just now"
+    if minutes < 60:
+        return f"{int(minutes)}m ago"
+    hours = minutes / 60
+    if hours < 2:
+        return "an hour ago"
+    if hours < 24:
+        return f"{int(hours)}h ago"
+    days = hours / 24
+    if days < 2:
+        return "yesterday"
+    if days < 7:
+        return f"{int(days)}d ago"
+    weeks = days / 7
+    if weeks < 5:
+        return f"{int(weeks)}w ago"
+    months = days / 30.4
+    if months < 12:
+        return f"{int(months)}mo ago"
+    return f"{int(days / 365)}y ago"
+
+
+def drive_letter(live_mount, remembered):
+    """
+    Which letter to show for a drive: where it is now, or where it last was.
+
+    A disconnected drive still says "(L:)" because that is how you know which
+    one to go and plug in. The letter is never part of the label, so it can
+    stay accurate without the name going stale.
+    """
+    return scanner.drive_letter_for(live_mount) or remembered or None
 
 
 def summarise_counts(per_category):
@@ -85,30 +172,34 @@ def summarise_counts(per_category):
         entry["n"] += n
 
     order = [key for key, _label, _m in tagging.CATEGORY_BUCKETS]
-    parts = [(totals[k]["label"], totals[k]["n"]) for k in order
-             if k in totals and totals[k]["n"]]
+    parts = [(tagging.count_label(totals[k]["label"], totals[k]["n"]), totals[k]["n"])
+             for k in order if k in totals and totals[k]["n"]]
     return {"total": sum(n for _label, n in parts), "parts": parts}
 
 
-def backup_state(duplicates, tags):
+def raw_backup_state(duplicates):
     """
-    'full', 'partial', 'split', or None when nothing exists elsewhere.
+    What the copies actually are: 'full', 'partial', 'split', or None.
 
-    Full means any single copy is complete, or the title is tagged
-    partial-ok. Split means the other location shares nothing with this one,
-    which is not protection and so never counts however it is tagged.
+    Split means the other location shares nothing with this one, which is not
+    protection and never counts however it is tagged.
     """
     if not duplicates:
         return None
     if any(d["complete"] for d in duplicates):
         return "full"
-
     if all(d["relation"] == "split" for d in duplicates):
         return "split"
-
-    if any(t.lower() == PARTIAL_OK_TAG for t in tags):
-        return "full"
     return "partial"
+
+
+def backup_state(duplicates, tags):
+    """The state as shown, which promotes a partial copy to full when
+    partial-ok says the missing parts are deliberate."""
+    state = raw_backup_state(duplicates)
+    if state == "partial" and any(t.lower() == PARTIAL_OK_TAG for t in tags):
+        return "full"
+    return state
 
 
 def annotate_tree(nodes, drive_total_bytes, drive_id, tags_by_path, dup_map, hints):
@@ -123,19 +214,24 @@ def annotate_tree(nodes, drive_total_bytes, drive_id, tags_by_path, dup_map, hin
             n["tags"] = tags_by_path.get(n["rel_path"], [])
             n["duplicates"] = dup_map.get(n["id"], []) if n["is_dir"] else []
             n["backup_state"] = backup_state(n["duplicates"], n["tags"])
+            # The unpromoted state too, so removing partial-ok can put the
+            # amber shield back without a reload.
+            n["backup_real"] = raw_backup_state(n["duplicates"])
             n["hints"] = hints.get(n["id"], [])
             n["hint_detail"] = structure.describe(n["hints"])
         else:
             n["tags"] = []
             n["duplicates"] = []
             n["backup_state"] = None
+            n["backup_real"] = None
             n["hints"] = []
             n["hint_detail"] = ""
         # A category folder says how many titles it holds. The children are
         # already loaded at this depth, so this costs no query.
         if n["depth"] == 1 and n["is_dir"]:
             n["title_count"] = len(n["children"])
-            n["title_word"] = tagging.bucket_for_category(n["name"])[1]
+            n["title_word"] = tagging.count_label(
+                tagging.bucket_for_category(n["name"])[1], n["title_count"])
         else:
             n["title_count"] = None
         annotate_tree(n["children"], drive_total_bytes, drive_id, tags_by_path,
@@ -174,12 +270,13 @@ def home():
     connected = scanner.get_connected_drives()
     hint_conn = db.get_conn()
     counts_by_drive = db.title_counts_by_category()
+    media_by_drive = db.indexed_bytes_by_drive()
 
     for d in drives:
         # Where this drive is right now, rather than where it was last scanned.
         mount = connected.get(d["drive_id"])
         d["connected"] = mount is not None
-        d["current_letter"] = scanner.drive_letter_for(mount)
+        d["current_letter"] = drive_letter(mount, d.get("last_letter"))
         # Only knowable while the drive is plugged in.
         d["external"] = scanner.is_external(mount) if mount else False
         d["bus_type"] = scanner.get_bus_type(mount) if mount else None
@@ -205,6 +302,19 @@ def home():
         d["used_h"] = human(used)
         d["free_h"] = human(free)
         d["segments_filled"] = round(40 * used / total)
+        d["scanned_ago"] = ago(d.get("last_scanned"))
+
+        # What is on the drive that is not indexed media. Worth showing: a
+        # drive that is full of something else is a drive with room to
+        # reclaim without deleting a single title.
+        media = media_by_drive.get(d["drive_id"], 0)
+        other = max(0, used - media)
+        d["media_h"] = human(media)
+        d["other_h"] = human(other)
+        d["media_pct"] = round(100 * media / total, 1) if total else 0
+        d["other_pct"] = round(100 * other / total, 1) if total else 0
+        # Only interesting once it is both large and a real share of the drive.
+        d["other_notable"] = other > 20 * 2**30 and d["other_pct"] >= 15
 
         tags_by_path = db.get_tags_for_drive(d["drive_id"])
         hints = structure.hints_for_drive(d["drive_id"], hint_conn)
@@ -239,6 +349,9 @@ def home():
         "free_h": human(grand_free),
         "pct_used": round(100 * grand_used / grand_total, 1) if grand_total else 0,
         "hint_count": sum(d["hint_count"] for d in drives),
+        # Nothing this process launches can draw a window in session 0, so the
+        # page says so rather than letting Open look broken.
+        "session_zero": fileops.in_session_zero(),
     }
 
     # Every category on every drive, folded together for the header. Backup
@@ -259,6 +372,8 @@ def home():
         low_space_drives=low_space_drives,
         all_tags=all_tags,
         system_tags=tagging.SYSTEM_TAGS,
+        known_tags=tagging.KNOWN_TAGS,
+        partial_ok_tag=tagging.PARTIAL_OK_TAG,
         star_tag=tagging.STAR_TAG,
         watching_tag=tagging.WATCHING_TAG,
         hint_meta=structure.HINTS,
@@ -275,8 +390,12 @@ def search():
     connected = scanner.get_connected_drives()
     for r in results:
         r["size_h"] = human(r["size_bytes"])
-        r["drive_letter"] = scanner.drive_letter_for(connected.get(r["drive_id"]))
-        r["connected"] = r["drive_letter"] is not None
+        mount = connected.get(r["drive_id"])
+        r["connected"] = mount is not None
+        r["drive_letter"] = drive_letter(mount, r.get("drive_letter_last"))
+        # A title, or something inside one. Colour-coded in the result list so
+        # a show is instantly distinguishable from one of its episodes.
+        r["is_title"] = r["depth"] == 2
     return jsonify({"results": results})
 
 
@@ -291,14 +410,23 @@ def api_tag():
     if not drive_id or not rel_path or not tag:
         return jsonify({"ok": False, "error": "drive_id, rel_path, and tag are required"}), 400
 
-    if action == "add":
-        db.add_tag(drive_id, rel_path, tag)
-    elif action == "remove":
-        db.remove_tag(drive_id, rel_path, tag)
-    else:
+    if action not in ("add", "remove"):
         return jsonify({"ok": False, "error": "action must be 'add' or 'remove'"}), 400
 
-    return jsonify({"ok": True})
+    # A tag describes the title, not the particular copy of it, so it follows
+    # every copy. Starring something and finding its backup unstarred was
+    # simply wrong: they are the same show.
+    targets = [(drive_id, rel_path)] + db.copies_of(drive_id, rel_path)
+    db.set_tag_bulk(targets, tag, action)
+
+    return jsonify({
+        "ok": True,
+        "tag": tag,
+        "action": action,
+        # So the page can update the copies it is already showing.
+        "applied_to": [{"drive_id": d, "rel_path": p} for d, p in targets],
+        "copies": len(targets) - 1,
+    })
 
 
 @app.route("/api/tags")
@@ -334,12 +462,20 @@ def api_tag_bulk():
     if not tag or not items:
         return jsonify({"ok": False, "error": "tag and a non-empty items list are required"}), 400
 
+    # Same rule as the single-title endpoint: a tag follows every copy.
+    spread = list(items)
+    for drive_id, rel_path in items:
+        spread.extend(db.copies_of(drive_id, rel_path))
+
     try:
-        count = db.set_tag_bulk(items, tag, action)
+        count = db.set_tag_bulk(spread, tag, action)
     except ValueError as e:
         return jsonify({"ok": False, "error": str(e)}), 400
 
-    return jsonify({"ok": True, "count": count, "tag": tag, "action": action})
+    return jsonify({
+        "ok": True, "count": count, "tag": tag, "action": action,
+        "applied_to": [{"drive_id": d, "rel_path": p} for d, p in spread],
+    })
 
 
 @app.route("/api/scan", methods=["POST"])
@@ -479,7 +615,7 @@ def describe_target(d, mount, source_drive_id=None):
     return {
         "drive_id": d["drive_id"],
         "label": d["label"],
-        "letter": scanner.drive_letter_for(mount),
+        "letter": drive_letter(mount, d.get("last_letter")),
         "free_bytes": d["free_bytes"],
         "free_h": human(d["free_bytes"]),
         "type_label": drivetypes.rule_for(drive_type)["label"],
@@ -540,15 +676,20 @@ def api_move_targets():
 
 @app.route("/api/copy/targets")
 def api_copy_targets():
-    """Drives a backup could go to: any connected one. The redundancy folder
-    is created if missing, so a drive does not need one already."""
-    connected = scanner.get_connected_drives(max_age=0)
+    """
+    Drives a backup could go to: any connected one except the source.
+
+    The redundancy folder is created if missing, so a drive does not need one
+    already. The source is excluded because a copy beside the original dies
+    with it, which is the failure this is meant to survive.
+    """
+    connected = scanner.get_connected_drives()
     source = request.args.get("source", "")
 
     targets = []
     for d in db.get_all_drives():
         mount = connected.get(d["drive_id"])
-        if mount is None:
+        if mount is None or d["drive_id"] == source:
             continue
         targets.append(describe_target(d, mount, source))
     return jsonify({"ok": True, "targets": targets})
@@ -603,6 +744,8 @@ def api_settings():
         "effective_path": path,
         "note": note,
         "config_path": config.CONFIG_PATH,
+        "db_path": db.db_path(),
+        "db_env_override": bool(os.environ.get("MEDIAVAULT_DB")),
         # So the panel can say up front whether Backup can do anything,
         # rather than the button failing when pressed.
         "rclone_path": backup.rclone_path(),
@@ -632,10 +775,38 @@ def api_settings_save():
         # rclone reports a bad target clearly enough when it runs.
         settings["backup_target"] = (data["backup_target"] or "").strip()
 
+    moved_to = None
+    if "db_path" in data:
+        wanted = (data["db_path"] or "").strip()
+        if os.environ.get("MEDIAVAULT_DB"):
+            return jsonify({
+                "ok": False,
+                "error": "MEDIAVAULT_DB is set in the environment and wins over "
+                         "this setting. Clear it first, or change it there.",
+            }), 400
+        was = db.db_path()
+        # This request has the database open, and Windows will not let a file
+        # be removed while a handle is on it. Let it go before moving.
+        _close_request_connection()
+        try:
+            now = db.move_database(wanted) if wanted else was
+        except OSError as e:
+            return jsonify({"ok": False, "error": str(e)}), 400
+        # Stored only when it is somewhere other than beside the code, so
+        # moving the code folder does not leave a stale absolute path winning
+        # over the new default.
+        settings["db_path"] = (
+            "" if os.path.normcase(now) == os.path.normcase(db.DEFAULT_DB_PATH) else now)
+        # Only report a move that happened. Saving other settings leaves the
+        # path alone, and saying it moved would be a lie.
+        if os.path.normcase(now) != os.path.normcase(was):
+            moved_to = now
+
     saved = config.save(settings)
     tool, path, note = config.resolve_copy_tool(saved)
     return jsonify({"ok": True, "settings": saved, "effective_copy_tool": tool,
-                    "effective_path": path, "note": note})
+                    "effective_path": path, "note": note,
+                    "db_path": db.db_path(), "db_moved_to": moved_to})
 
 
 @app.route("/api/backup", methods=["POST"])
@@ -664,15 +835,26 @@ def api_settings_browse():
     if os.name != "nt":
         return jsonify({"ok": False, "error": "Only available on Windows."}), 400
 
-    script = (
-        "import tkinter as tk;"
-        "from tkinter import filedialog;"
-        "r = tk.Tk(); r.withdraw(); r.attributes('-topmost', True);"
-        "p = filedialog.askopenfilename("
-        "title='Pick the program that should copy files',"
-        "filetypes=[('Programs', '*.exe'), ('All files', '*.*')]);"
-        "print(p or '')"
-    )
+    # folder=1 asks for a directory instead, which is what the database path
+    # wants: a place to keep it, not a file to run.
+    if request.args.get("folder") == "1":
+        script = (
+            "import tkinter as tk;"
+            "from tkinter import filedialog;"
+            "r = tk.Tk(); r.withdraw(); r.attributes('-topmost', True);"
+            "p = filedialog.askdirectory(title='Pick a folder for mediavault.db');"
+            "print(p or '')"
+        )
+    else:
+        script = (
+            "import tkinter as tk;"
+            "from tkinter import filedialog;"
+            "r = tk.Tk(); r.withdraw(); r.attributes('-topmost', True);"
+            "p = filedialog.askopenfilename("
+            "title='Pick the program that should copy files',"
+            "filetypes=[('Programs', '*.exe'), ('All files', '*.*')]);"
+            "print(p or '')"
+        )
     try:
         result = subprocess.run([sys.executable, "-c", script],
                                 capture_output=True, text=True, timeout=180)

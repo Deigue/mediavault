@@ -62,6 +62,20 @@ def snapshot(dest=SNAPSHOT_PATH):
     return dest
 
 
+def _discard_snapshot():
+    """
+    Remove the staging file once it has been sent.
+
+    rclone uploads a file from disk, so a snapshot has to exist for a moment,
+    but keeping a second copy of the database around afterwards serves
+    nothing. The hash in last.json is what the skip check needs, not the file.
+    """
+    try:
+        os.remove(SNAPSHOT_PATH)
+    except OSError:
+        pass
+
+
 def digest(path):
     h = hashlib.sha1()
     with open(path, "rb") as f:
@@ -112,11 +126,13 @@ def run(target=None):
     # VACUUM INTO rewrites the file every time, so its timestamp and size tell
     # you nothing; the contents are the only honest test.
     sha = digest(SNAPSHOT_PATH)
+    size = os.path.getsize(SNAPSHOT_PATH)
     last = _last_upload()
     if last.get("sha1") == sha and last.get("target") == target:
+        _discard_snapshot()
         return {
             "target": target,
-            "bytes": os.path.getsize(SNAPSHOT_PATH),
+            "bytes": size,
             "at": datetime.now().isoformat(timespec="seconds"),
             "skipped": True,
             "last_at": last.get("at"),
@@ -152,9 +168,10 @@ def run(target=None):
         raise BackupError(f"rclone failed: {tail}")
 
     _remember_upload(target, sha)
+    _discard_snapshot()
     return {
         "target": target,
-        "bytes": os.path.getsize(SNAPSHOT_PATH),
+        "bytes": size,
         "at": datetime.now().isoformat(timespec="seconds"),
         "skipped": False,
     }

@@ -54,6 +54,9 @@ def _new_job(steps):
         # Progress within the title being worked on, so a single large title
         # does not look frozen while its episodes copy.
         "current_progress": None,
+        # The single file being written, when the copier can say. robocopy
+        # can; the others only give us the folder filling up.
+        "current_file": None,
         "items": [
             {"name": s["name"], "category": s["category"],
              "size_bytes": s["size_bytes"], "operation": s["operation"],
@@ -92,6 +95,7 @@ def _run(job, steps):
             with _lock:
                 job["items"][index]["status"] = "moving"
                 job["current"] = job["items"][index]["name"]
+                job["current_file"] = None
                 job["target_label"] = step["target_label"]
                 job["verb"] = _verb_for(step["operation"])
                 job["current_progress"] = None
@@ -107,13 +111,20 @@ def _run(job, steps):
                         f"{files_done}/{files_total} files" if files_total else "copying"
                     )
 
+            def on_file(name, percent):
+                """The file robocopy is on right now, which is finer than the
+                once-a-second folder measurement can be."""
+                with _lock:
+                    job["current_file"] = {"name": name, "pct": round(percent, 1)}
+
             try:
                 planner = moveops.plan_move if moving else moveops.plan_redundancy_copy
                 plan = planner(step["node_id"], step["target_drive_id"])
                 touched_drives.add(plan["source_drive_id"])
 
                 runner = moveops.move_title if moving else moveops.copy_title
-                result = runner(plan, log=lambda m: _log(job, m), progress=on_progress)
+                result = runner(plan, log=lambda m: _log(job, m),
+                                progress=on_progress, on_file=on_file)
                 with _lock:
                     job["items"][index].update(
                         status="done",
@@ -135,6 +146,7 @@ def _run(job, steps):
             with _lock:
                 job["completed"] = index + 1
                 job["current_progress"] = None
+                job["current_file"] = None
 
         # Sizes and free space on every drive involved are now out of date.
         if job["moved"]:

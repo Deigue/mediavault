@@ -107,6 +107,13 @@
     border-color:rgba(167,139,250,0.45); background:rgba(167,139,250,0.10); color:#C4B5FD;
   }
   .alert-pill.hint:hover{ border-color:var(--purple); }
+  .alert-pill.crit{
+    border-color:var(--crit); background:rgba(232,96,76,0.12); color:#F0A99E;
+  }
+  .alert-detail.crit{
+    border-color:rgba(232,96,76,0.35); background:rgba(232,96,76,0.08); color:#F0A99E;
+  }
+  .alert-detail.crit b{ color:var(--crit); }
   .alert-pill .caret{ font-size:9px; opacity:0.7; }
   .alert-detail{
     display:none; width:100%; margin-top:2px; font-size:12.5px; line-height:1.65;
@@ -156,7 +163,16 @@
     box-shadow:inset 2px 0 0 var(--accent);
   }
   .search-row > *{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .search-row .nm{ color:var(--text); }
+  .search-row .nm{ color:var(--text-dim); display:flex; align-items:center; gap:7px; }
+  /* A title is what everything is built around, so it leads. Anything deeper
+     is an episode or a file within one, and stays quieter. */
+  .search-row.is-title{ box-shadow:inset 2px 0 0 var(--accent-dim); }
+  .search-row.is-title .nm{ color:var(--text); font-weight:500; }
+  .search-row .row-kind{
+    font-family:'IBM Plex Mono','Cascadia Mono',Consolas,monospace; font-size:9px;
+    letter-spacing:0.06em; text-transform:uppercase; color:var(--accent);
+    background:rgba(79,209,197,0.12); border-radius:3px; padding:1px 5px; flex-shrink:0;
+  }
   .search-row .path{ color:var(--text-faint); font-size:11px; font-family:'IBM Plex Mono','Cascadia Mono',Consolas,monospace; }
   /* Disconnected drives are dimmed, so a result you can open right now stands
      out from one that needs the drive plugging in first. */
@@ -325,11 +341,16 @@
     letter-spacing:0.06em; padding:2px 7px; border-radius:4px; margin-left:8px;
     vertical-align:middle; border:1px solid var(--line); color:var(--text-faint);
   }
+  /* One colour per medium, so the type is readable without reading. Flash
+     shares a family (amber to orange) because the rules are shared too. */
   .type-badge.type-ssd{ color:#7DD3FC; border-color:rgba(125,211,252,0.35); }
   .type-badge.type-hdd{ color:#C4B5FD; border-color:rgba(196,181,253,0.35); }
   .type-badge.type-usb{ color:#FCD34D; border-color:rgba(252,211,77,0.35); }
+  .type-badge.type-sdc{ color:#FDBA74; border-color:rgba(253,186,116,0.4); }
+  .type-badge.type-phone{ color:#6EE7B7; border-color:rgba(110,231,183,0.4); }
+  .type-badge.type-unknown{ color:var(--text-faint); border-color:var(--line); }
   .type-badge.type-external{ color:#FCD34D; border-color:rgba(252,211,77,0.35); }
-  .badge.cold{ background:rgba(125,211,252,0.12); color:#7DD3FC; border:1px solid rgba(125,211,252,0.4); }
+  .type-badge.type-cold{ color:#93C5FD; border-color:rgba(147,197,253,0.4); }
 
   .space-note{
     padding:11px 20px; font-size:12.5px; line-height:1.6;
@@ -364,6 +385,10 @@
   .ds-toggle input{ cursor:pointer; margin:0; }
 
   /* ---- move target picker ---- */
+  .mv-source{
+    font-family:'IBM Plex Mono','Cascadia Mono',Consolas,monospace; font-size:11.5px;
+    color:var(--accent); margin-bottom:7px;
+  }
   .mv-targets{ display:flex; flex-direction:column; gap:3px; margin-bottom:14px; }
   .mv-target{
     display:grid; grid-template-columns:auto 46px minmax(0,1fr) auto auto auto; gap:9px;
@@ -585,11 +610,15 @@
      name, some badges and a gauge. An open card always spans the full width:
      the tree needs the room, and only one card ever being wide is what keeps
      scrolling and jump-to-node behaving as they did. */
+  /* stretch, not start: if one card in a row needs a second line of badges,
+     its neighbours match it rather than the row looking ragged. */
   .drive-list.grid{
     display:grid; gap:14px;
     grid-template-columns: repeat(auto-fill, minmax(430px, 1fr));
-    align-items:start;
+    align-items:stretch;
   }
+  .drive-list.grid .drive:not(.open){ display:flex; flex-direction:column; }
+  .drive-list.grid .drive:not(.open) .drive-head{ flex:1 1 auto; }
   .drive-list.grid .drive{ margin-bottom:0; }
   .drive-list.grid .drive.open{ grid-column:1 / -1; }
 
@@ -645,10 +674,27 @@
   /* A drive drops out entirely when nothing inside it matches the title
      filters, or when the drive filters exclude the card itself. */
   .drive.filtered-out, .drive.drive-hidden{ display:none; }
-  .drive-head{ padding:18px 20px 16px; cursor:pointer; display:flex; flex-direction:column; gap:10px; }
-  .drive-top-row{ display:flex; justify-content:space-between; align-items:baseline; gap:16px; }
-  .drive-name{ font-size:17px; font-weight:600; }
-  .drive-meta{ font-family:'IBM Plex Mono', 'Cascadia Mono', Consolas, monospace; font-size:11.5px; color:var(--text-faint); margin-top:3px; }
+  .drive-head{ padding:14px 18px 13px; cursor:pointer; display:flex; flex-direction:column; gap:8px; }
+  .drive-top-row{ display:flex; justify-content:space-between; align-items:baseline; gap:14px; }
+  /* min-width:0 lets a long name ellipsis rather than widen the row and push
+     the capacity figures out of line. */
+  .drive-ident{ min-width:0; flex:1 1 auto; }
+  .drive-name-line{ display:flex; align-items:center; gap:0; min-width:0; }
+  .drive-name{
+    font-size:16px; font-weight:600; overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap; min-width:0;
+  }
+  /* Part of the name for reading, kept apart for editing: renaming touches
+     only the label, never the letter. */
+  .drive-letter{ color:var(--text-faint); font-weight:500; }
+  /* Full card width, so every wording of the scan time fits without being
+     cut off. margin-top pulls it back under the name it belongs to. */
+  .drive-meta{
+    font-family:'IBM Plex Mono', 'Cascadia Mono', Consolas, monospace;
+    font-size:11.5px; color:var(--text-faint); margin-top:-5px;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .drive-meta .scanned{ cursor:help; }
   .drive-stats{ font-family:'IBM Plex Mono', 'Cascadia Mono', Consolas, monospace; font-size:13px; color:var(--text-dim); text-align:right; white-space:nowrap; }
   .drive-stats .used{ color:var(--text); }
   .badge{
@@ -659,18 +705,21 @@
   .badge.crit{ background:rgba(232,96,76,0.15); color:var(--crit); border:1px solid var(--crit); }
   .chevron{ color:var(--text-faint); font-family:'IBM Plex Mono', 'Cascadia Mono', Consolas, monospace; font-size:12px; }
 
+  /* Always visible. Appearing on hover made the row change height under the
+     pointer, and on a narrow tile that pushed the badges onto a new line. */
   .drive-btn{
-    background:none; border:none; color:var(--text-faint); cursor:pointer;
-    font-size:12px; padding:3px 5px; border-radius:4px; vertical-align:middle;
-    opacity:0; transition:opacity .12s, color .12s;
-    display:inline-flex; align-items:center; line-height:0;
+    background:none; border:1px solid var(--line); color:var(--text-faint);
+    cursor:pointer; font-size:11px; padding:2px 6px; border-radius:10px;
+    display:inline-flex; align-items:center; line-height:0; flex-shrink:0;
+    transition:color .12s, border-color .12s, background .12s;
   }
-  .drive-btn .ic{ width:13px; height:13px; display:block; }
-  .drive-head:hover .drive-btn{ opacity:1; }
-  .drive-btn:hover{ color:var(--accent); background:rgba(255,255,255,0.05); }
-  /* Same treatment as the bins in the tree: red at rest, brighter on hover. */
-  .drive-btn.delete-btn{ color:#B4564A; }
-  .drive-btn.delete-btn:hover{ color:#FF6B58; background:rgba(232,96,76,0.18); }
+  .drive-btn .ic{ width:12px; height:12px; display:block; }
+  .drive-btn:hover{ color:var(--accent); border-color:var(--accent-dim); background:rgba(79,209,197,0.12); }
+  /* Amber, not red, and an eye rather than a bin: forgetting a drive removes
+     it from the index and touches nothing on the drive. */
+  .drive-btn.forget-btn:hover{
+    color:var(--warn); border-color:rgba(242,166,90,0.5); background:rgba(242,166,90,0.14);
+  }
   .drive-name-input{
     display:none; background:var(--panel-raised); border:1px solid var(--accent-dim);
     border-radius:6px; padding:3px 9px; font-size:16px; font-weight:600; color:var(--text);
@@ -678,7 +727,7 @@
   }
   .drive.renaming .drive-name{ display:none; }
   .drive.renaming .drive-name-input{ display:inline-block; }
-  .drive.renaming .rename-btn, .drive.renaming .delete-btn{ display:none; }
+  .drive.renaming .rename-btn, .drive.renaming .forget-btn{ visibility:hidden; }
 
   /* A folder with nothing inside it gets no expand arrow and no pointer. */
   details.node.leaf-dir > summary{ cursor:default; }
@@ -872,10 +921,40 @@
 
   /* How many titles sit here, at three levels: the whole library, one drive,
      and one category folder. */
+  .space-split{
+    display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+    font-family:'IBM Plex Mono','Cascadia Mono',Consolas,monospace; font-size:10.5px;
+    color:var(--text-faint); margin-top:-4px;
+  }
+  .space-split span{ display:inline-flex; align-items:center; gap:5px; cursor:help; }
+  .space-split .ss-low{
+    margin-left:auto; border-radius:9px; padding:0 6px; border:1px solid;
+    font-size:9.5px; letter-spacing:0.04em;
+  }
+  .space-split .ss-low.warn{ color:var(--warn); border-color:rgba(242,166,90,0.5); background:rgba(242,166,90,0.12); }
+  .space-split .ss-low.crit{ color:var(--crit); border-color:rgba(232,96,76,0.55); background:rgba(232,96,76,0.14); }
+  /* Pushed right only when the low-space badge is not already doing it. */
+  .space-split .ss-free{ cursor:default; }
+  .space-split .ss-low + .ss-free{ margin-left:0; }
+  .space-split > .ss-free:nth-child(3){ margin-left:auto; }
+  .ss-dot{ width:7px; height:7px; border-radius:2px; flex-shrink:0; }
+  .ss-dot.media{ background:var(--accent); }
+  .ss-dot.other{ background:var(--text-faint); }
+  /* A lot of something else is worth noticing: it is space you can reclaim
+     without deleting any media at all. */
+  .space-split .ss-other.notable{ color:var(--warn); }
+  .space-split .ss-other.notable .ss-dot{ background:var(--warn); }
+
+  /* Counts on the left, badges and controls pushed right by dc-spacer. Wraps
+     within itself before ever making the card taller, which is why the badges
+     live here rather than on the name line. */
   .drive-counts{
     display:flex; align-items:center; gap:5px; flex-wrap:wrap; margin-top:-2px;
     font-family:'IBM Plex Mono', 'Cascadia Mono', Consolas, monospace; font-size:10.5px;
+    row-gap:4px;
   }
+  .drive-counts .dc-spacer{ flex:1 1 auto; min-width:6px; }
+  .drive-counts .type-badge, .drive-counts .badge{ margin-left:0; }
   .drive-counts .dc-total{ color:var(--text-dim); margin-right:1px; }
   .drive-counts .dc-chip{
     color:var(--text-faint); background:var(--panel-raised);
@@ -920,13 +999,47 @@
   }
   .tag-remove:hover{ color:var(--crit); }
   .tag-add-btn{
-    background:none; border:1px dashed var(--line); color:var(--text-faint); cursor:pointer;
-    border-radius:20px; width:20px; height:20px; font-size:13px; line-height:1;
+    background:var(--panel-raised); border:1px solid var(--line); color:var(--text-faint);
+    cursor:pointer; border-radius:50%; width:18px; height:18px; padding:0;
+    display:inline-flex; align-items:center; justify-content:center; flex-shrink:0;
+    transition:color .12s, border-color .12s, background .12s;
   }
-  .tag-add-btn:hover{ border-color:var(--accent-dim); color:var(--accent); }
-  .tag-input{
-    display:none; background:var(--panel-raised); border:1px solid var(--accent-dim); border-radius:20px;
-    padding:2px 10px; font-size:11px; color:var(--text); width:100px; outline:none;
+  .tag-add-btn .ic{ width:11px; height:11px; display:block; }
+  .tag-add-btn:hover{
+    border-color:var(--accent); color:var(--accent); background:rgba(79,209,197,0.14);
+  }
+
+  /* ---- tag picker ---- */
+  .tag-pop{
+    display:none; position:fixed; z-index:130; width:230px;
+    background:var(--panel-raised); border:1px solid var(--line); border-radius:9px;
+    box-shadow:0 14px 34px rgba(0,0,0,0.55); overflow:hidden;
+  }
+  .tag-pop.show{ display:block; }
+  .tag-pop-input{
+    width:100%; background:var(--bg); border:none; border-bottom:1px solid var(--line);
+    padding:8px 11px; color:var(--text); font-size:12.5px; outline:none;
+    font-family:'IBM Plex Sans','Segoe UI',system-ui,sans-serif;
+  }
+  .tag-pop-input::placeholder{ color:var(--text-faint); }
+  .tag-pop-list{ max-height:220px; overflow-y:auto; padding:3px; }
+  /* One slim row per tag, so a long list stays scannable. */
+  .tag-pop-row{
+    display:flex; align-items:center; gap:7px; width:100%; text-align:left;
+    background:none; border:none; cursor:pointer; padding:5px 8px;
+    border-radius:6px; font-size:12.5px; color:var(--text-dim);
+    font-family:'IBM Plex Sans','Segoe UI',system-ui,sans-serif;
+  }
+  .tag-pop-row:hover, .tag-pop-row.active{ background:rgba(79,209,197,0.12); color:var(--text); }
+  .tag-pop-row .tp-mark{ width:12px; flex-shrink:0; font-size:11px; color:var(--accent); }
+  .tag-pop-row .tp-name{ flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .tag-pop-row.on .tp-name{ color:var(--accent); }
+  .tag-pop-row .tp-note{ font-size:10px; color:var(--text-faint); flex-shrink:0; }
+  .tag-pop-row.create .tp-mark{ color:var(--text-faint); }
+  .tag-pop-empty{ padding:9px 10px; font-size:11.5px; color:var(--text-faint); }
+  .tag-pop-foot{
+    padding:6px 10px; font-size:10.5px; color:var(--text-faint);
+    border-top:1px solid var(--line);
   }
 
   /* ---- multi-select + bulk tagging ---- */
@@ -998,9 +1111,11 @@
 <body>
 
 <datalist id="tag-suggestions">
-  {# The system tags are always offered, even before anything carries them. #}
+  {# The tags MediaVault acts on are always offered, even before anything
+     carries them, so they never have to be typed from memory. #}
   {% for name, meta in system_tags.items() %}<option value="{{ name }}">{{ meta.label }}: {{ meta.meaning }}</option>{% endfor %}
-  {% for t in all_tags %}{% if t|lower not in system_tags %}<option value="{{ t }}">{% endif %}{% endfor %}
+  {% for name, meaning in known_tags.items() %}<option value="{{ name }}">{{ meaning }}</option>{% endfor %}
+  {% for t in all_tags %}{% if t|lower not in system_tags and t|lower not in known_tags %}<option value="{{ t }}">{% endif %}{% endfor %}
 </datalist>
 
 <header>
@@ -1049,8 +1164,14 @@
     </div>
   </div>
 
-  {% if low_space_drives or stats.hint_count %}
+  {% if low_space_drives or stats.hint_count or stats.session_zero %}
   <div class="alerts">
+    {% if stats.session_zero %}
+    <button class="alert-pill crit" data-alert="session0">
+      <span class="ai">⚠</span> Running without a desktop
+      <span class="caret">▾</span>
+    </button>
+    {% endif %}
     {% if low_space_drives %}
     <button class="alert-pill warn" data-alert="lowspace">
       <span class="ai">⚠</span> {{ low_space_drives|length }} drive(s) low on space
@@ -1064,6 +1185,15 @@
     </button>
     {% endif %}
 
+    {% if stats.session_zero %}
+    <div class="alert-detail crit" id="alert-session0">
+      <b>This dashboard is running in Windows session 0, which has no desktop.</b>
+      Everything here works except launching things: <b>Open</b> will do nothing
+      and playing a file gives audio from a window you cannot see or close.
+      The scheduled task is set to "Run whether user is logged on or not";
+      change it to <b>Run only when user is logged on</b> and restart it.
+    </div>
+    {% endif %}
     {% if low_space_drives %}
     <div class="alert-detail warn" id="alert-lowspace">
       <b>Low space:</b>
@@ -1263,8 +1393,11 @@
       <span class="tag-chip small" data-tag="{{ t }}">{{ t }}<button class="tag-remove" data-tag="{{ t }}" title="Remove tag">×</button></span>
       {% endif %}
       {% endfor %}
-      <button class="tag-add-btn" title="Add tag">+</button>
-      <input class="tag-input" list="tag-suggestions" placeholder="tag name">
+      {# One shared picker serves every title, opened by these buttons. A
+         popover per title would be thousands of hidden nodes. #}
+      <button class="tag-add-btn" title="Add a tag" aria-label="Add a tag">
+        <svg viewBox="0 0 16 16" class="ic" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </button>
     </span>
   {% endmacro %}
 
@@ -1311,7 +1444,7 @@
         {% for o in node.duplicates %}
         <button class="shield-copy" data-node-id="{{ o.id }}"
                 title="Jump to this copy">
-          <span class="sc-drive">{{ o.drive_label }}</span>
+          <span class="sc-drive">{{ o.drive_label }}{% if o.drive_letter_last %} ({{ o.drive_letter_last }}){% endif %}</span>
           <span class="sc-path">{{ o.rel_path }}</span>
           <span class="sc-state {{ {'full':'ok','partial':'part','split':'split'}[o.relation] }}">
             {{ o.detail if o.detail else o.relation }}
@@ -1363,6 +1496,15 @@
 
   {% macro icon_folder() %}<svg viewBox="0 0 16 16" class="ic" aria-hidden="true"><path d="M1.5 3.5h4l1.2 1.6h7.8a1 1 0 0 1 1 1v6.4a1 1 0 0 1-1 1H1.5a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>{% endmacro %}
   {% macro icon_play() %}<svg viewBox="0 0 16 16" class="ic" aria-hidden="true"><path d="M4.5 2.8l8 5.2-8 5.2z" fill="currentColor"/></svg>{% endmacro %}
+  {# Forget is an eye with a line through it, not a bin: it removes the drive
+     from the index and touches nothing on the drive itself. A bin next to a
+     drive name reads as "delete my media", which it emphatically is not. #}
+  {# An SVG, not the "✎" glyph, which rendered shorter than the icon beside it
+     because a glyph's height comes from the font rather than the box. #}
+  {% macro icon_pencil() %}<svg viewBox="0 0 16 16" class="ic" aria-hidden="true"><path d="M11.3 2.4l2.3 2.3-8 8-3 .7.7-3z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M10.1 3.6l2.3 2.3" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>{% endmacro %}
+
+  {% macro icon_forget() %}<svg viewBox="0 0 16 16" class="ic" aria-hidden="true"><path d="M1.6 8s2.4-4.2 6.4-4.2c1 0 1.9.3 2.7.7M14.4 8s-2.4 4.2-6.4 4.2c-1.1 0-2-.3-2.8-.7" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="8" cy="8" r="1.9" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M2.4 13.6L13.6 2.4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>{% endmacro %}
+
   {% macro icon_trash() %}<svg viewBox="0 0 16 16" class="ic" aria-hidden="true"><path d="M2.6 4.3h10.8M6.2 4.3V2.9h3.6v1.4M3.9 4.3l.7 8.6a1 1 0 0 0 1 .9h4.8a1 1 0 0 0 1-.9l.7-8.6M6.6 6.8v4.4M9.4 6.8v4.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>{% endmacro %}
 
   {% macro render_node(node) %}
@@ -1374,7 +1516,7 @@
              data-depth="{{ node.depth }}"
              data-node-id="{{ node.id }}"
              {% if needs_lazy %}data-lazy="1"{% endif %}
-             {% if node.depth == 2 %}data-tags="{{ node.tags|join('|') }}" data-backup="{{ node.backup_state or '' }}" data-hints="{{ node.hints|join('|') }}"{% endif %}
+             {% if node.depth == 2 %}data-tags="{{ node.tags|join('|') }}" data-backup="{{ node.backup_state or '' }}" data-backup-real="{{ node.backup_real or '' }}" data-hints="{{ node.hints|join('|') }}"{% endif %}
              ontoggle="onNodeToggle(this)">
       <summary>
         <span class="name-wrap">
@@ -1398,7 +1540,7 @@
       </div>
     </details>
     {% else %}
-    <div class="node file-node" data-depth="{{ node.depth }}" data-node-id="{{ node.id }}" {% if node.depth == 2 %}data-tags="{{ node.tags|join('|') }}" data-backup="{{ node.backup_state or '' }}" data-hints="{{ node.hints|join('|') }}"{% endif %}>
+    <div class="node file-node" data-depth="{{ node.depth }}" data-node-id="{{ node.id }}" {% if node.depth == 2 %}data-tags="{{ node.tags|join('|') }}" data-backup="{{ node.backup_state or '' }}" data-backup-real="{{ node.backup_real or '' }}" data-hints="{{ node.hints|join('|') }}"{% endif %}>
       {% if node.depth == 2 %}{{ select_box(node) }}{% endif %}
       <span class="name" title="{{ node.name }}">{{ node.name }}</span>
       {% if node.depth == 2 %}{{ node_meta(node) }}{% endif %}
@@ -1419,34 +1561,18 @@
        data-used="{{ d.pct_used }}"
        data-size="{{ d.total_bytes or 0 }}">
     <div class="drive-head">
+      {# The name line carries only the name, its letter and the status, so a
+         long label cannot push anything onto a second row. Badges and the
+         two controls live at the end of the counts row instead, where there
+         is room and where they can wrap into that row's own space. #}
       <div class="drive-top-row">
-        <div>
-          <span class="conn-dot {{ 'on' if d.connected else 'off' }}"
-                title="{{ (d.label ~ ' is connected as ' ~ d.current_letter) if d.connected else (d.label ~ ' is not connected') }}"></span>
-          <span class="drive-name">{{ d.label }}</span>
-          <input class="drive-name-input" value="{{ d.label }}" maxlength="80" autocomplete="off">
-          <button class="drive-btn rename-btn" title="Rename this drive">✎</button>
-          <button class="drive-btn delete-btn" title="Forget this drive (does not touch the drive itself)">{{ icon_trash() }}</button>
-          <span class="type-badge type-{{ d.drive_type }}"
-                title="{{ 'Set by hand' if d.type_is_manual else 'Read from the volume label' }}. Warns below {{ d.space.threshold_pct }}% free.">{{ d.type_label }}</span>
-          {% if d.external %}
-          <span class="type-badge type-external"
-                title="Attached over {{ d.bus_type or 'USB' }}, so it can be unplugged and kept somewhere else">EXTERNAL</span>
-          {% endif %}
-          {% if d.cold_storage %}
-            <span class="badge cold" title="Kept full on purpose. Low space warnings are off.">COLD STORAGE</span>
-          {% elif d.low_space %}
-            <span class="badge {{ 'crit' if d.space.severity == 'critical' else 'warn' }}">
-              {{ d.space.free_pct }}% FREE
-            </span>
-          {% endif %}
-          <div class="drive-meta">
-            {% if d.connected %}
-              <span class="conn-label on">connected as {{ d.current_letter }}</span>
-            {% else %}
-              <span class="conn-label off">not connected</span>
-            {% endif %}
-            · last scanned {{ d.last_scanned[:16] if d.last_scanned else 'never' }}
+        <div class="drive-ident">
+          <div class="drive-name-line">
+            <span class="conn-dot {{ 'on' if d.connected else 'off' }}"
+                  title="{{ (d.label ~ ' is connected as ' ~ d.current_letter) if d.connected else (d.label ~ ' is not connected') }}"></span>
+            <span class="drive-name">{{ d.label }}{% if d.current_letter %}
+              <span class="drive-letter">({{ d.current_letter }})</span>{% endif %}</span>
+            <input class="drive-name-input" value="{{ d.label }}" maxlength="80" autocomplete="off">
           </div>
         </div>
         <div style="display:flex; align-items:center; gap:16px;">
@@ -1454,19 +1580,69 @@
           <span class="chevron">▾</span>
         </div>
       </div>
-      {% if d.counts.total %}
-      {# Its own row rather than inside the left column, which the capacity
-         figures squeeze to about half the card. Chips rather than a sentence
-         in brackets, which ran together once a drive held four categories. #}
+
+      {# Its own row, not inside the name column, which the capacity figures
+         squeeze to about half the card and which truncated the longer time
+         wordings. #}
+      <div class="drive-meta">
+        {% if d.connected %}
+          <span class="conn-label on">connected as {{ d.current_letter }}</span>
+        {% else %}
+          <span class="conn-label off">not connected</span>
+        {% endif %}
+        · <span class="scanned" title="{{ d.last_scanned or 'never scanned' }}">last
+          scanned {{ d.scanned_ago }}</span>
+      </div>
+
       <div class="drive-counts">
+        {% if d.counts.total %}
         <span class="dc-total">{{ d.counts.total }} titles</span>
         {% for label, n in d.counts.parts %}
         <span class="dc-chip"><b>{{ n }}</b> {{ label }}</span>
         {% endfor %}
+        {% endif %}
+
+        <span class="dc-spacer"></span>
+
+        {# The medium, and removable only where that is not already implied.
+           The low-space badge is not here: it sits beside the free figure
+           above, which is what it is about, and which keeps this row short
+           enough to stay on one line in a narrow tile. #}
+        <span class="type-badge type-{{ d.drive_type }}"
+              title="{{ 'Set by hand' if d.type_is_manual else 'Read from the volume label' }}. Warns below {{ d.space.threshold_pct }}% free.">{{ d.type_label }}</span>
+        {% if d.external and d.drive_type in ('hdd', 'ssd', 'unknown') %}
+        <span class="type-badge type-external"
+              title="Attached over {{ d.bus_type or 'USB' }}, so it can be unplugged and kept somewhere else">EXT</span>
+        {% endif %}
+        {% if d.cold_storage %}
+        <span class="type-badge type-cold" title="Kept full on purpose. Low space warnings are off.">COLD</span>
+        {% endif %}
+
+        {# Always visible, so they never appear on hover and change the height,
+           and always last so they stay anchored right. #}
+        <button class="drive-btn rename-btn" title="Rename this drive">{{ icon_pencil() }}</button>
+        <button class="drive-btn forget-btn"
+                title="Forget this drive: removes it from MediaVault's index only. Nothing on the drive itself is touched.">{{ icon_forget() }}</button>
       </div>
-      {% endif %}
       <div class="gauge {% if d.pct_used > 90 %}crit{% elif d.pct_used > 80 %}warn{% endif %}">
         {% for i in range(40) %}<div class="seg {% if i < d.segments_filled %}filled{% endif %}"></div>{% endfor %}
+      </div>
+      {# Media against everything else. A drive mostly full of other things
+         has room to reclaim without deleting a single title. #}
+      <div class="space-split">
+        <span class="ss-media" title="Total size of the library and redundancy folders MediaVault has indexed">
+          <span class="ss-dot media"></span>{{ d.media_h }} media
+        </span>
+        <span class="ss-other {{ 'notable' if d.other_notable else '' }}"
+              title="Everything else on this drive: {{ d.other_pct }}% of it. MediaVault does not track what this is.">
+          <span class="ss-dot other"></span>{{ d.other_h }} other
+        </span>
+        {# Right beside the free figure, which is what it is about. #}
+        {% if d.low_space and not d.cold_storage %}
+        <span class="ss-low {{ 'crit' if d.space.severity == 'critical' else 'warn' }}"
+              title="Only {{ d.space.free_pct }}% free, below the {{ d.space.threshold_pct }}% this drive should keep">{{ d.space.free_pct }}%</span>
+        {% endif %}
+        <span class="ss-free">{{ d.free_h }} free</span>
       </div>
     </div>
 
@@ -1566,6 +1742,7 @@
 <div id="move-backdrop" class="modal-backdrop">
   <div class="modal">
     <div class="modal-title">Move <span id="mv-count">0</span> title(s)</div>
+    <div class="mv-source" id="mv-source"></div>
     <div class="modal-name" id="mv-names"></div>
     <div class="modal-body">
       Pick a drive. Each title goes into the matching category there, so Anime
@@ -1681,12 +1858,31 @@
       <div class="set-note" id="set-backup-note"></div>
     </div>
 
+    <div class="set-section">
+      <div class="set-label">Database location</div>
+      <div class="set-path-row">
+        <input id="set-db-path" class="bulk-input set-path" autocomplete="off">
+        <button class="bulk-btn" onclick="browseForDbFolder()">Browse…</button>
+      </div>
+      <div class="set-note" id="set-db-note"></div>
+    </div>
+
     <div class="modal-actions">
       <button class="bulk-btn ghost" onclick="closeSettings()">Cancel</button>
       <button class="bulk-btn apply" id="set-save" onclick="saveSettings()">Save</button>
     </div>
     <div class="modal-note" id="set-config-path"></div>
   </div>
+</div>
+
+{# A direct child of body, so position:fixed measures against the viewport. A
+   copy inside each title's markup would sit in a nested <details>, which acts
+   as the containing block and throws a fixed child hundreds of pixels off. #}
+<div id="tag-picker" class="tag-pop">
+  <input id="tag-picker-input" class="tag-pop-input" autocomplete="off"
+         placeholder="Filter, or type a new tag" spellcheck="false">
+  <div id="tag-picker-list" class="tag-pop-list"></div>
+  <div id="tag-picker-foot" class="tag-pop-foot"></div>
 </div>
 
 <div id="job-dock" class="job-dock">
@@ -1866,18 +2062,21 @@ function buildNodeDanger(n){
 document.addEventListener('click', function(e){
   const renameBtn = e.target.closest('.rename-btn');
   if(renameBtn){
+    e.stopPropagation();
     const drive = renameBtn.closest('.drive');
     drive.classList.add('renaming');
+    // The input already holds the label without the letter, which is what
+    // renaming edits. Taking it from the heading would drag "(D:)" in.
     const input = drive.querySelector('.drive-name-input');
-    input.value = drive.querySelector('.drive-name').textContent.trim();
     input.focus();
     input.select();
     return;
   }
-  const deleteBtn = e.target.closest('.delete-btn');
+  const deleteBtn = e.target.closest('.forget-btn');
   if(deleteBtn){
+    e.stopPropagation();
     const drive = deleteBtn.closest('.drive');
-    const label = drive.querySelector('.drive-name').textContent.trim();
+    const label = drive.querySelector('.drive-name-input').value.trim();
     askConfirm({
       title: `Forget "${label}"?`,
       body: 'This removes the drive, its indexed contents and its tags from '
@@ -1908,7 +2107,11 @@ document.addEventListener('keydown', function(e){
   const label = e.target.value.trim();
   if(!label){ drive.classList.remove('renaming'); return; }
   postJSON('/api/drive/label', {drive_id: drive.dataset.driveId, label: label}, (data) => {
-    drive.querySelector('.drive-name').textContent = data.label;
+    const heading = drive.querySelector('.drive-name');
+    const letter = heading.querySelector('.drive-letter');
+    heading.textContent = data.label;
+    if(letter) heading.appendChild(letter);
+    drive.dataset.label = data.label.toLowerCase();
     drive.classList.remove('renaming');
   });
 });
@@ -2649,6 +2852,7 @@ async function runSetup(){
 let suggestionData = null;
 
 async function openSuggestions(){
+  if(document.getElementById('suggest-btn').disabled) return;
   document.getElementById('suggest-backdrop').classList.add('show');
   await loadSuggestions();
 }
@@ -3212,6 +3416,14 @@ function renderSettings(){
   document.getElementById('set-verify').checked = s.settings.verify_after_copy !== false;
   document.getElementById('set-config-path').textContent = 'Saved in ' + s.config_path;
 
+  document.getElementById('set-db-path').value = s.db_path || '';
+  document.getElementById('set-db-note').textContent = s.db_env_override
+    ? 'Set by the MEDIAVAULT_DB environment variable, which wins over this. '
+      + 'Clear it there to change it here.'
+    : 'Where mediavault.db is kept. Changing it moves the file and uses the new '
+      + 'location from then on, including for backups.';
+  document.getElementById('set-db-path').disabled = !!s.db_env_override;
+
   document.getElementById('set-backup-target').value = s.settings.backup_target || '';
   // Say up front whether the Backup button can work, rather than letting it
   // fail when pressed.
@@ -3324,6 +3536,23 @@ document.addEventListener('input', function(e){
   updateEffective();
 });
 
+/* Where mediavault.db lives. Saving moves the file, so the note says so
+   before rather than after. */
+async function browseForDbFolder(){
+  const note = document.getElementById('set-db-note');
+  note.textContent = 'A folder picker has opened. It may be behind this window.';
+  try{
+    const res = await fetch('/api/settings/browse?folder=1', {method: 'POST'});
+    const data = await res.json();
+    if(!data.ok){ note.textContent = data.error || 'Could not open a picker.'; return; }
+    if(data.cancelled){ note.textContent = 'Nothing picked.'; return; }
+    document.getElementById('set-db-path').value = data.path;
+    note.textContent = 'Saving will move the database here and use it from then on.';
+  } catch(e){
+    note.textContent = 'Could not reach the server.';
+  }
+}
+
 async function browseForProgram(){
   const note = document.getElementById('set-path-note');
   note.textContent = 'A file picker has opened. It may be behind this window.';
@@ -3352,14 +3581,17 @@ function saveSettings(){
     copy_tool_path: needsPath(chosen)
       ? document.getElementById('set-path').value.trim() : '',
     verify_after_copy: document.getElementById('set-verify').checked,
-    backup_target: document.getElementById('set-backup-target').value.trim()
+    backup_target: document.getElementById('set-backup-target').value.trim(),
+    db_path: document.getElementById('set-db-path').value.trim()
   }, (data) => {
     btn.disabled = false;
     closeSettings();
     const names = {python: 'the built-in copier', robocopy: 'Robocopy',
                    teracopy: 'TeraCopy', fastcopy: 'FastCopy'};
-    flashToast(data.note
-      || `Copies will use ${names[data.effective_copy_tool] || data.effective_copy_tool}`);
+    flashToast(data.db_moved_to
+      ? `Database moved to ${data.db_moved_to}`
+      : (data.note
+         || `Copies will use ${names[data.effective_copy_tool] || data.effective_copy_tool}`));
   }, () => { btn.disabled = false; });
 }
 
@@ -3413,6 +3645,13 @@ async function openMoveModal(operation){
   })));
 }
 
+/* "HDD-750GB-WD02 (I:)" for a drive id, read from the card already on the
+   page rather than fetched. */
+function driveDisplayName(driveId){
+  const el = document.querySelector(`.drive[data-drive-id="${CSS.escape(driveId)}"] .drive-name`);
+  return el ? el.textContent.replace(/\s+/g, ' ').trim() : null;
+}
+
 async function openTransferModal(operation, items){
   moveOperation = operation;
   const copying = operation === 'copy';
@@ -3444,6 +3683,15 @@ async function openTransferModal(operation, items){
   document.getElementById('mv-names').textContent =
     moveSelection.names.slice(0, 6).join('\n')
     + (items.length > 6 ? `\n… and ${items.length - 6} more` : '');
+
+  // Where this is coming from. Picking a destination without being told the
+  // source is guesswork when several drives hold a title of the same name.
+  const sourceEl = document.getElementById('mv-source');
+  const froms = moveSelection.driveIds.map(driveDisplayName).filter(Boolean);
+  sourceEl.textContent = froms.length
+    ? (froms.length === 1 ? `From ${froms[0]}` : `From ${froms.join(', ')}`)
+    : '';
+  sourceEl.style.display = froms.length ? '' : 'none';
 
   const list = document.getElementById('mv-targets');
   list.innerHTML = '<div class="mv-empty">Looking for drives…</div>';
@@ -3602,6 +3850,19 @@ document.addEventListener('click', function(e){
   }]);
 });
 
+/* While a move or backup is running the suggestion list is out of date: the
+   titles in flight are still listed, and still ticked. Reopening it invites
+   sending the same job twice, so the button is held shut until the run ends. */
+function lockSuggestions(running){
+  const btn = document.getElementById('suggest-btn');
+  btn.disabled = running;
+  btn.title = running
+    ? 'Busy moving or backing up. The list would still show the titles in '
+      + 'flight, so it opens again once the run finishes.'
+    : 'What is worth moving or backing up';
+  if(running) closeSuggestions();
+}
+
 function showMovePanel(){
   document.getElementById('move-panel').classList.add('show');
   document.getElementById('move-reload').style.display = 'none';
@@ -3657,6 +3918,7 @@ const MOVE_ICONS = {waiting: '·', moving: '▸', done: '✓', failed: '✕'};
 
 function renderMoveJob(job){
   const verb = job.verb || 'Moving';
+  lockSuggestions(job.status === 'running');
   if(job.status === 'running'){
     document.getElementById('move-title').textContent =
       job.current ? `${verb} ${job.current} to ${job.target_label}` : verb + '…';
@@ -3674,7 +3936,12 @@ function renderMoveJob(job){
   const p = job.current_progress;
   if(p && job.status === 'running'){
     cur.style.display = '';
-    document.getElementById('move-current-name').textContent = job.current || '';
+    // robocopy reports the file it is on, which is finer than the folder
+    // measurement. Other copiers say nothing, so the title stands alone.
+    const f = job.current_file;
+    document.getElementById('move-current-name').textContent = f && f.name
+      ? `${job.current || ''}  ·  ${f.name}${f.pct ? '  ' + f.pct + '%' : ''}`
+      : (job.current || '');
     document.getElementById('move-current-nums').textContent =
       `${p.files_done}/${p.files_total} files · ${humanBytes(p.bytes_done)} of ${humanBytes(p.bytes_total)} · ${p.pct}%`;
     document.getElementById('move-current-fill').style.width = p.pct + '%';
@@ -3750,21 +4017,9 @@ function cancelRename(){
   document.querySelectorAll('.drive.renaming').forEach(d => d.classList.remove('renaming'));
 }
 
-function cancelTagInput(){
-  document.querySelectorAll('.tag-input').forEach(input => {
-    if(input.style.display === 'inline-block'){
-      input.style.display = 'none';
-      input.value = '';
-    }
-  });
-}
-
 document.addEventListener('click', function(e){
   if(!e.target.closest('.drive-name-input') && !e.target.closest('.rename-btn')){
     cancelRename();
-  }
-  if(!e.target.closest('.tag-input') && !e.target.closest('.tag-add-btn')){
-    cancelTagInput();
   }
   if(!e.target.closest('.toolbar')){
     closeSearchResults();
@@ -3795,7 +4050,7 @@ document.addEventListener('keydown', function(e){
     return;
   }
   cancelRename();
-  cancelTagInput();
+  closeTagPicker();
   closeShieldPopovers();
   closeSearchResults();
   if(document.getElementById('setup-panel').classList.contains('show')) closeSetup();
@@ -3855,25 +4110,11 @@ async function applyBulkTag(action){
   if(boxes.length === 0) return;
 
   const items = boxes.map(cb => ({drive_id: cb.dataset.driveId, rel_path: cb.dataset.relPath}));
-  postJSON('/api/tag/bulk', {items: items, tag: tag, action: action}, () => {
-    // Reflect the change in place so the tag chips and filters stay accurate
-    // without a full page reload.
-    boxes.forEach(cb => {
-      const node = cb.closest('.dir-node') || cb.closest('.file-node');
-      const wrap = node && node.querySelector('.tags-inline');
-      if(!node || !wrap) return;
-      const tags = new Set((node.dataset.tags || '').split('|').filter(Boolean));
-
-      if(action === 'add' && !tags.has(tag)){
-        tags.add(tag);
-        wrap.insertBefore(makeTagChip(tag), wrap.querySelector('.tag-add-btn'));
-      } else if(action === 'remove'){
-        tags.delete(tag);
-        const chip = wrap.querySelector(`.tag-chip[data-tag="${CSS.escape(tag)}"]`);
-        if(chip) chip.remove();
-      }
-      node.dataset.tags = [...tags].join('|');
-    });
+  postJSON('/api/tag/bulk', {items: items, tag: tag, action: action}, (data) => {
+    // The server reports every path it touched, copies included, and
+    // applyTagLocally owns the chips and the shield for each.
+    (data.applied_to || items).forEach(
+      t => applyTagLocally(t.drive_id, t.rel_path, tag, action));
     input.value = '';
     clearSelection();
   });
@@ -3997,24 +4238,20 @@ async function runSearch(q){
   }
 }
 
-/* Label plus the live drive letter, without saying the letter twice. An
-   auto-detected label already looks like "HDD-4TB-02 (D:)", and a drive can
-   be renamed to anything, so check before appending. */
+/* Label plus its drive letter. The label is a plain name now, so the letter
+   is simply appended: the live one when the drive is plugged in, otherwise
+   the one it was last seen on, which is how you know what to go and connect. */
 function driveTagText(r){
-  if(!r.connected) return r.drive_label;
-  const letter = r.drive_letter;                 // e.g. "D:"
-  const label = r.drive_label;
-  const alreadyThere = new RegExp('\\(\\s*' + letter.replace(':', '\\:') + '\\s*\\\\?\\s*\\)$')
-                         .test(label.trim())
-                     || label.trim().toUpperCase().endsWith(letter.toUpperCase());
-  return alreadyThere ? label : `${label} (${letter})`;
+  return r.drive_letter ? `${r.drive_label} (${r.drive_letter})` : r.drive_label;
 }
 
 /* One compact line per hit. The drive and full path are on the row itself so
    two copies of the same title are distinguishable at a glance. */
 function buildSearchRow(r){
   const row = document.createElement('div');
-  row.className = 'search-row';
+  // Titles are marked, so a show reads differently from one of its episodes
+  // at a glance rather than after reading the path.
+  row.className = 'search-row' + (r.is_title ? ' is-title' : '');
   row.title = r.drive_label + ' → ' + r.rel_path;
 
   // Drives that are plugged in show their current letter, so it is obvious
@@ -4029,6 +4266,12 @@ function buildSearchRow(r){
   const nm = document.createElement('div');
   nm.className = 'nm';
   nm.textContent = r.name;
+  if(r.is_title){
+    const kind = document.createElement('span');
+    kind.className = 'row-kind';
+    kind.textContent = 'title';
+    nm.appendChild(kind);
+  }
 
   const path = document.createElement('div');
   path.className = 'path';
@@ -4380,69 +4623,265 @@ document.addEventListener('click', function(e){
   const tag = toggle.dataset.tag;
   const turningOn = !toggle.classList.contains('on');
 
+  // postTag updates the toggle, the chips and data-tags for this title and
+  // every copy of it, so there is nothing to do here.
   postTag(wrap.dataset.driveId, wrap.dataset.relPath, tag,
-          turningOn ? 'add' : 'remove', () => {
-    toggle.classList.toggle('on', turningOn);
-    // Keep data-tags in step so the filters see the change straight away.
-    const node = wrap.closest('.dir-node') || wrap.closest('.file-node');
-    if(node){
-      const tags = new Set((node.dataset.tags || '').split('|').filter(Boolean));
-      if(turningOn) tags.add(tag); else tags.delete(tag);
-      node.dataset.tags = [...tags].join('|');
-    }
-  });
+          turningOn ? 'add' : 'remove');
 });
 
 /* ---------- tag add/remove ---------- */
 document.addEventListener('click', function(e){
   const removeBtn = e.target.closest('.tag-remove');
   if(removeBtn){
+    e.preventDefault();
+    e.stopPropagation();
     const wrap = removeBtn.closest('.tags-inline');
-    const chip = removeBtn.closest('.tag-chip');
-    postTag(wrap.dataset.driveId, wrap.dataset.relPath, removeBtn.dataset.tag, 'remove', () => chip.remove());
+    postTag(wrap.dataset.driveId, wrap.dataset.relPath, removeBtn.dataset.tag, 'remove');
     return;
   }
   const addBtn = e.target.closest('.tag-add-btn');
   if(addBtn){
-    const wrap = addBtn.closest('.tags-inline');
-    const input = wrap.querySelector('.tag-input');
-    input.style.display = 'inline-block';
-    input.focus();
+    e.preventDefault();
+    e.stopPropagation();
+    openTagPicker(addBtn);
     return;
   }
 });
-document.addEventListener('keydown', function(e){
-  if(e.target.classList.contains('tag-input') && e.key === 'Enter'){
-    e.preventDefault();
-    const input = e.target;
-    const wrap = input.closest('.tags-inline');
-    const tag = input.value.trim();
-    if(!tag) return;
-    postTag(wrap.dataset.driveId, wrap.dataset.relPath, tag, 'add', () => {
-      const chip = document.createElement('span');
-      chip.className = 'tag-chip small';
-      chip.dataset.tag = tag;
-      const label = document.createTextNode(tag);
-      chip.appendChild(label);
-      const rm = document.createElement('button');
-      rm.className = 'tag-remove';
-      rm.dataset.tag = tag;
-      rm.title = 'Remove tag';
-      rm.textContent = '×';
-      chip.appendChild(rm);
-      wrap.insertBefore(chip, wrap.querySelector('.tag-add-btn'));
-      // Update data-tags on whichever node element wraps this tag editor
-      // (could be a details.dir-node or a div.file-node).
-      const nodeEl = wrap.closest('.dir-node') || wrap.closest('.file-node');
-      if(nodeEl){
-        const existing = (nodeEl.dataset.tags || '').split('|').filter(Boolean);
-        if(!existing.includes(tag)){ existing.push(tag); nodeEl.dataset.tags = existing.join('|'); }
-      }
+
+/* ---------- tag picker ----------
+   One popover, moved to <body> while open and placed against the viewport.
+   Picking a row applies the tag straight away; typing filters the list and
+   offers to create whatever is not in it. */
+let tagPicker = null;      // {wrap} while open
+
+function knownTags(){
+  return [...document.querySelectorAll('#tag-suggestions option')]
+    .map(o => o.value).filter(Boolean);
+}
+
+/* A tag invented just now is not in the list the page was rendered with, so
+   it is added here. Without this the picker would keep offering to create a
+   tag that already exists on the title. */
+function rememberTag(tag){
+  if(knownTags().some(t => t.toLowerCase() === tag.toLowerCase())) return;
+  const option = document.createElement('option');
+  option.value = tag;
+  document.getElementById('tag-suggestions').appendChild(option);
+}
+
+function openTagPicker(button){
+  const pop = document.getElementById('tag-picker');
+  tagPicker = {wrap: button.closest('.tags-inline')};
+  pop.classList.add('show');
+
+  const input = document.getElementById('tag-picker-input');
+  input.value = '';
+  renderTagPicker();
+
+  const anchor = button.getBoundingClientRect();
+  const box = pop.getBoundingClientRect();
+  const margin = 8;
+
+  let top = anchor.bottom + 6;
+  if(top + box.height > window.innerHeight - margin){
+    top = anchor.top - box.height - 6;      // flip above the button
+  }
+  // The button can be below the fold, in which case neither side of it is on
+  // screen, so the result is clamped to the viewport whatever was chosen.
+  top = Math.min(top, window.innerHeight - box.height - margin);
+  top = Math.max(margin, top);
+
+  let left = Math.min(anchor.left, window.innerWidth - box.width - margin);
+  left = Math.max(margin, left);
+
+  pop.style.top = Math.round(top) + 'px';
+  pop.style.left = Math.round(left) + 'px';
+  input.focus({preventScroll: true});
+}
+
+function closeTagPicker(){
+  if(!tagPicker) return;
+  document.getElementById('tag-picker').classList.remove('show');
+  tagPicker = null;
+}
+
+function renderTagPicker(){
+  if(!tagPicker) return;
+  const {wrap} = tagPicker;
+  const node = wrap.closest('.dir-node') || wrap.closest('.file-node');
+  const applied = new Set((node ? node.dataset.tags || '' : '')
+    .split('|').filter(Boolean).map(t => t.toLowerCase()));
+
+  const query = document.getElementById('tag-picker-input').value.trim();
+  const list = document.getElementById('tag-picker-list');
+  const foot = document.getElementById('tag-picker-foot');
+  list.innerHTML = '';
+
+  const matches = knownTags()
+    .filter(t => !query || t.toLowerCase().includes(query.toLowerCase()))
+    .sort((a, b) => {
+      // Already on this title first, so removing is as quick as adding.
+      const on = applied.has(b.toLowerCase()) - applied.has(a.toLowerCase());
+      return on || a.localeCompare(b);
     });
-    input.value = '';
-    input.style.display = 'none';
+
+  const exact = knownTags().some(t => t.toLowerCase() === query.toLowerCase());
+  if(query && !exact){
+    list.appendChild(tagPickerRow(query, false, 'new tag', true));
+  }
+  matches.forEach(t => list.appendChild(tagPickerRow(t, applied.has(t.toLowerCase()))));
+
+  if(!list.children.length){
+    const empty = document.createElement('div');
+    empty.className = 'tag-pop-empty';
+    empty.textContent = 'No tags yet. Type one to create it.';
+    list.appendChild(empty);
+  }
+  foot.textContent = query && !exact
+    ? `Enter to add "${query}"`
+    : 'Click to add or remove. Click away when done.';
+}
+
+function tagPickerRow(tag, isOn, note, isNew){
+  const row = document.createElement('button');
+  row.className = 'tag-pop-row' + (isOn ? ' on' : '') + (isNew ? ' create' : '');
+  row.dataset.tag = tag;
+
+  const mark = document.createElement('span');
+  mark.className = 'tp-mark';
+  mark.textContent = isNew ? '+' : (isOn ? '✓' : '');
+
+  const name = document.createElement('span');
+  name.className = 'tp-name';
+  name.textContent = tag;
+
+  row.append(mark, name);
+  if(note){
+    const n = document.createElement('span');
+    n.className = 'tp-note';
+    n.textContent = note;
+    row.appendChild(n);
+  }
+  row.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    chooseTag(tag, isOn ? 'remove' : 'add');
+  });
+  return row;
+}
+
+/* Applied on the spot, and the picker stays open: adding three tags, or
+   adding one and removing another, is one visit rather than three. It closes
+   when you click away, which is the point at which you are done. */
+function chooseTag(tag, action){
+  if(!tagPicker) return;
+  const {wrap} = tagPicker;
+  postTag(wrap.dataset.driveId, wrap.dataset.relPath, tag, action, () => {
+    if(!tagPicker) return;              // clicked away while it was in flight
+    const input = document.getElementById('tag-picker-input');
+    input.value = '';                   // a typed name has been used up
+    renderTagPicker();                  // the tick moves to reflect the change
+    input.focus({preventScroll: true});
+  });
+}
+
+document.addEventListener('input', function(e){
+  if(e.target.id === 'tag-picker-input') renderTagPicker();
+});
+
+document.addEventListener('keydown', function(e){
+  if(e.target.id !== 'tag-picker-input') return;
+  const rows = [...document.querySelectorAll('#tag-picker-list .tag-pop-row')];
+  const current = rows.findIndex(r => r.classList.contains('active'));
+
+  if(e.key === 'Escape'){ e.preventDefault(); closeTagPicker(); return; }
+  if(e.key === 'ArrowDown' || e.key === 'ArrowUp'){
+    e.preventDefault();
+    if(!rows.length) return;
+    let next = current + (e.key === 'ArrowDown' ? 1 : -1);
+    if(next < 0) next = rows.length - 1;
+    if(next >= rows.length) next = 0;
+    rows.forEach((r, i) => r.classList.toggle('active', i === next));
+    rows[next].scrollIntoView({block: 'nearest'});
+    return;
+  }
+  if(e.key === 'Enter'){
+    e.preventDefault();
+    if(current >= 0){ rows[current].click(); return; }
+    const typed = e.target.value.trim();
+    if(typed) chooseTag(typed, 'add');
   }
 });
+
+document.addEventListener('click', function(e){
+  if(tagPicker && !e.target.closest('#tag-picker') && !e.target.closest('.tag-add-btn')){
+    closeTagPicker();
+  }
+});
+window.addEventListener('scroll', closeTagPicker, true);
+window.addEventListener('resize', closeTagPicker);
+/* ---------- keeping the page in step with a tag change ----------
+   Two things follow from tagging a title. The shield may change colour,
+   because partial-ok is what promotes an amber shield to green. And every
+   other copy of the same title carries the tag too, so any of them already
+   on screen has to show it. */
+const PARTIAL_OK_TAG = {{ partial_ok_tag|tojson }};
+
+function nodesFor(driveId, relPath){
+  return [...document.querySelectorAll(
+    `.tags-inline[data-drive-id="${CSS.escape(driveId)}"]`
+    + `[data-rel-path="${CSS.escape(relPath)}"]`)]
+    .map(w => w.closest('.dir-node') || w.closest('.file-node'))
+    .filter(Boolean);
+}
+
+/* partial-ok says a partial copy is deliberate, so the title counts as
+   covered. Reflected straight away rather than waiting for a reload. */
+function refreshShield(node){
+  const shield = node.querySelector(':scope > summary .shield, :scope > .shield');
+  if(!shield) return;
+  const real = node.dataset.backupReal || node.dataset.backup || '';
+  const tags = (node.dataset.tags || '').split('|').filter(Boolean);
+  const okay = tags.some(t => t.toLowerCase() === PARTIAL_OK_TAG);
+  const shown = (real === 'partial' && okay) ? 'full' : real;
+
+  node.dataset.backup = shown;
+  shield.classList.remove('full', 'partial', 'split');
+  shield.classList.add(shown);
+  shield.textContent = {full: '🛡', partial: '⛊', split: '⇄'}[shown] || '🛡';
+  shield.title = shown === 'full'
+    ? (real === 'partial'
+        ? 'Counted as backed up: only part of it is copied, and partial-ok says '
+          + 'that is deliberate'
+        : 'Backed up elsewhere')
+    : (shown === 'partial' ? 'Only partly backed up. Tag it partial-ok if that is deliberate.'
+                           : 'Split across drives, not a backup');
+}
+
+/* Mirror a tag onto every node on the page for this title, wherever it is. */
+function applyTagLocally(driveId, relPath, tag, action){
+  nodesFor(driveId, relPath).forEach(node => {
+    const tags = new Set((node.dataset.tags || '').split('|').filter(Boolean));
+    if(action === 'add') tags.add(tag); else tags.delete(tag);
+    node.dataset.tags = [...tags].join('|');
+
+    const wrap = node.querySelector('.tags-inline');
+    if(wrap){
+      const toggle = wrap.querySelector(`.sys-tag[data-tag="${CSS.escape(tag)}"]`);
+      if(toggle){
+        toggle.classList.toggle('on', action === 'add');
+      } else if(action === 'add'
+                && !wrap.querySelector(`.tag-chip[data-tag="${CSS.escape(tag)}"]`)){
+        wrap.insertBefore(makeTagChip(tag), wrap.querySelector('.tag-add-btn'));
+      } else if(action === 'remove'){
+        const chip = wrap.querySelector(`.tag-chip[data-tag="${CSS.escape(tag)}"]`);
+        if(chip) chip.remove();
+      }
+    }
+    refreshShield(node);
+  });
+}
+
 async function postTag(driveId, relPath, tag, action, onSuccess, onFailure){
   try{
     const res = await fetch('/api/tag', {
@@ -4456,6 +4895,12 @@ async function postTag(driveId, relPath, tag, action, onSuccess, onFailure){
       if(onFailure) onFailure();
       return;
     }
+    if(action === 'add') rememberTag(tag);
+    // The server applies the tag to every copy, so update all of them here.
+    (data.applied_to || [{drive_id: driveId, rel_path: relPath}])
+      .forEach(t => applyTagLocally(t.drive_id, t.rel_path, tag, action));
+    if(data.copies) flashToast(`Also applied to ${data.copies} other cop`
+                             + (data.copies === 1 ? 'y' : 'ies') + ' of this title');
     if(onSuccess) onSuccess();
   } catch(err){
     alert('Network error updating tag - is dashboard.py still running?');
