@@ -368,21 +368,34 @@ def home():
         space = drivetypes.evaluate(d["drive_type"], free, total, d["cold_storage"])
         d["space"] = space
         d["low_space"] = space["low"]
+        # Drives the border and the free figure. A drive with no capacity
+        # figures has nothing to judge, so it stays neutral rather than
+        # reading as critically full on a free percentage of zero.
+        d["space_state"] = space["severity"] if d["total_bytes"] else "unknown"
         d["total_h"] = human(total)
         d["used_h"] = human(used)
         d["free_h"] = human(free)
-        d["segments_filled"] = round(40 * used / total)
         d["scanned_ago"] = ago(d.get("last_scanned"))
 
-        # What is on the drive that is not indexed media. Worth showing: a
-        # drive that is full of something else is a drive with room to
-        # reclaim without deleting a single title.
-        media = media_by_drive.get(d["drive_id"], 0)
-        other = max(0, used - media)
-        d["media_h"] = human(media)
+        # The three bands the capacity bar draws: the library, the copies kept
+        # beside it in redundancy folders, and everything MediaVault does not
+        # track. A drive full of that last one has room to reclaim without
+        # deleting a single title. Widths stay unrounded, or they drift.
+        bands = media_by_drive.get(d["drive_id"], {})
+        library = bands.get("library", 0)
+        backups = bands.get("redundancy", 0)
+        other = max(0, used - library - backups)
+        d["library_h"] = human(library)
+        d["backups_h"] = human(backups)
         d["other_h"] = human(other)
-        d["media_pct"] = round(100 * media / total, 1) if total else 0
-        d["other_pct"] = round(100 * other / total, 1) if total else 0
+        d["bar"] = {
+            "library": 100.0 * library / total,
+            "backups": 100.0 * backups / total,
+            "other": 100.0 * other / total,
+        }
+        d["library_pct"] = round(d["bar"]["library"], 1)
+        d["backups_pct"] = round(d["bar"]["backups"], 1)
+        d["other_pct"] = round(d["bar"]["other"], 1)
         # Only interesting once it is both large and a real share of the drive.
         d["other_notable"] = other > 20 * 2**30 and d["other_pct"] >= 15
 

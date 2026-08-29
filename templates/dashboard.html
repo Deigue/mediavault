@@ -58,11 +58,12 @@
   h1{ font-size:24px; font-weight:700; margin:0 0 3px; letter-spacing:-0.01em; }
   .sub{ color:var(--text-dim); font-size:12.5px; }
 
-  /* The gauge takes the first column on both rows; everything after it is an
-     equal share, so the second row's cells line up under the first row's. */
+  /* The bar takes the first column on both rows; everything after it is an
+     equal share, so the second row's cells line up under the first row's. The
+     column count is set inline, from however many cells each row actually has. */
   .overview{
     flex:1 1 560px; min-width:0;
-    display:grid; grid-template-columns: 1.5fr repeat(5, minmax(0, 1fr)); gap:1px;
+    display:grid; grid-template-columns: 1.5fr repeat(4, minmax(0, 1fr)); gap:1px;
     background:var(--line); border:1px solid var(--line); border-radius:10px; overflow:hidden;
   }
   .overview .cell{ background:var(--panel); padding:9px 13px; min-width:0; }
@@ -83,17 +84,43 @@
   /* Starts the second row under the gauge, so the title figures sit in their
      own band rather than wrapping into whatever space is left. */
   .overview .cell.span-first{ grid-column:1; }
+  /* Absorbs any column the row did not need, so a short row leaves no gap. */
+  .overview .cell.fill-rest{ grid-column:auto / -1; }
   .overview .gauge-cell{ display:flex; flex-direction:column; justify-content:center; grid-row:1; }
 
-  .gauge{ display:flex; gap:2px; height:16px; margin-top:4px; }
-  .gauge .seg{ flex:1; background:var(--seg-empty); border-radius:1px; }
-  .gauge .seg.filled{ background:var(--accent); }
-  .gauge.warn .seg.filled{ background:var(--warn); }
-  .gauge.crit .seg.filled{ background:var(--crit); }
   .gauge-caption{
     display:flex; justify-content:space-between; font-family:'IBM Plex Mono', 'Cascadia Mono', Consolas, monospace;
     font-size:11px; color:var(--text-faint); margin-top:6px;
   }
+
+  /* A drive's capacity bar answers "what is the space", not "how much is
+     left": library, the copies beside it, then whatever is not indexed. Free
+     space is the bare track. Fullness is on the panel border and the free
+     figure, so no band has to carry two meanings at once. Widths are exact
+     percentages, so a small band is never rounded away. */
+  .cap-bar{
+    display:flex; height:16px; border-radius:3px; overflow:hidden;
+    background:var(--seg-empty);
+  }
+  .cap-bar > span{ min-width:0; }
+  .cap-bar .cb-library{ background:var(--accent); }
+  /* Slashed like reserved space in a disk tool, because that is what it is:
+     second copies, held back rather than spent on new titles. */
+  .cap-bar .cb-backups{
+    background:var(--purple);
+    background-image:repeating-linear-gradient(-45deg,
+      rgba(16,19,26,0.55) 0 3px, rgba(16,19,26,0) 3px 6px);
+  }
+  .cap-bar .cb-other{ background:var(--text-faint); }
+  /* The library-wide bar in the header is fullness only, no breakdown, so its
+     fill keeps the colour the drive bars gave up. */
+  .cap-bar.total{ margin-top:4px; }
+  .cap-bar.total .cb-used{ background:var(--accent); }
+  .cap-bar.total.warn .cb-used{ background:var(--warn); }
+  .cap-bar.total.crit .cb-used{ background:var(--crit); }
+  /* Follows the legend dot below it. Orange here can only mean untracked
+     space worth reclaiming, since fullness no longer lives in this bar. */
+  .cap-bar .cb-other.notable{ background:var(--warn); }
 
   /* Warnings are a row of pills that expand on click, so they stay visible
      without costing a paragraph of height before anything useful. */
@@ -674,6 +701,15 @@
      clipped anything that needed to escape the card. The children that touch
      the rounded corners carry their own radius instead. */
   .drive{ background:var(--panel); border:1px solid var(--line); border-radius:10px; margin-bottom:16px; }
+  /* How full the drive is, moved off the capacity bar so that bar is free to
+     show what the space is instead. Driven by the drive's own threshold, so a
+     hard disk at 88% is calm and an SSD at the same figure is not. Cold
+     storage is deliberately full and stays neutral. */
+  .drive.space-ok{ border-color:rgba(79,209,197,0.40); }
+  .drive.space-warn{ border-color:rgba(242,166,90,0.75); }
+  .drive.space-critical{
+    border-color:var(--crit); box-shadow:0 0 0 1px rgba(232,96,76,0.22);
+  }
   .drive-head{ border-radius:9px 9px 0 0; }
   .drive:not(.open) .drive-head{ border-radius:9px; }
   .drive-body{ border-radius:0 0 9px 9px; }
@@ -951,17 +987,22 @@
   }
   .space-split span{ display:inline-flex; align-items:center; gap:5px; cursor:help; }
   .space-split .ss-low{
-    margin-left:auto; border-radius:9px; padding:0 6px; border:1px solid;
+    border-radius:9px; padding:0 6px; border:1px solid;
     font-size:9.5px; letter-spacing:0.04em;
   }
+  /* The badge and the free figure travel as one, so a narrow card wraps them
+     together and keeps them right rather than stranding the figure. */
+  .space-split .ss-tail{ margin-left:auto; gap:8px; }
   .space-split .ss-low.warn{ color:var(--warn); border-color:rgba(242,166,90,0.5); background:rgba(242,166,90,0.12); }
   .space-split .ss-low.crit{ color:var(--crit); border-color:rgba(232,96,76,0.55); background:rgba(232,96,76,0.14); }
-  /* Pushed right only when the low-space badge is not already doing it. */
   .space-split .ss-free{ cursor:default; }
-  .space-split .ss-low + .ss-free{ margin-left:0; }
-  .space-split > .ss-free:nth-child(3){ margin-left:auto; }
+  /* The other half of the fullness signal the bar gave up. */
+  .space-split .ss-free.space-ok{ color:var(--accent); }
+  .space-split .ss-free.space-warn{ color:var(--warn); }
+  .space-split .ss-free.space-critical{ color:var(--crit); }
   .ss-dot{ width:7px; height:7px; border-radius:2px; flex-shrink:0; }
-  .ss-dot.media{ background:var(--accent); }
+  .ss-dot.library{ background:var(--accent); }
+  .ss-dot.backups{ background:var(--purple); }
   .ss-dot.other{ background:var(--text-faint); }
   /* A lot of something else is worth noticing: it is space you can reclaim
      without deleting any media at all. */
@@ -1057,6 +1098,10 @@
   .tag-pop-row .tp-mark{ width:12px; flex-shrink:0; font-size:11px; color:var(--accent); }
   .tag-pop-row .tp-name{ flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .tag-pop-row.on .tp-name{ color:var(--accent); }
+  /* Only part of the selection carries it, so neither adding nor removing is
+     the obvious move. The dash says so, and the count says how far off it is. */
+  .tag-pop-row.some .tp-mark{ color:var(--warn); }
+  .tag-pop-row.some .tp-name{ color:var(--text); }
   .tag-pop-row .tp-note{ font-size:10px; color:var(--text-faint); flex-shrink:0; }
   .tag-pop-row.create .tp-mark{ color:var(--text-faint); }
   .tag-pop-empty{ padding:9px 10px; font-size:11.5px; color:var(--text-faint); }
@@ -1104,7 +1149,6 @@
   }
   .bulk-btn.apply{ background:rgba(79,209,197,0.15); border-color:var(--accent); color:var(--accent); }
   .bulk-btn.apply:hover{ background:rgba(79,209,197,0.25); }
-  .bulk-btn.remove:hover{ border-color:var(--crit); color:var(--crit); }
   .bulk-btn.ghost:hover{ color:var(--text); }
 
   /* ---- scaffold prompt on an empty drive ---- */
@@ -1151,13 +1195,16 @@
     {# Two rows in one panel: capacity along the top, what is actually stored
        along the bottom. Every figure gets its own cell, so the row uses the
        full width and stays one line however many categories exist. #}
-    <div class="overview">
+    {# Sized to whichever row needs the most cells, and the last cell of each
+       row runs to the edge, so no leftover column shows as a grey block. #}
+    {% set counts_cells = 1 + library.parts|length + (1 if library.backups else 0) %}
+    {% set overview_cols = [5, counts_cells]|max %}
+    <div class="overview"
+         style="grid-template-columns: 1.5fr repeat({{ overview_cols - 1 }}, minmax(0, 1fr));">
       <div class="cell gauge-cell">
         <div class="label">Overall capacity</div>
-        <div class="gauge {% if stats.pct_used > 90 %}crit{% elif stats.pct_used > 80 %}warn{% endif %}">
-          {% for i in range(40) %}
-            <div class="seg {% if i < (stats.pct_used/100*40)|round(0,'floor') %}filled{% endif %}"></div>
-          {% endfor %}
+        <div class="cap-bar total {% if stats.pct_used > 90 %}crit{% elif stats.pct_used > 80 %}warn{% endif %}">
+          <span class="cb-used" style="width:{{ stats.pct_used }}%"></span>
         </div>
         <div class="gauge-caption"><span>{{ stats.pct_used }}% used</span><span>{{ stats.free_h }} free</span></div>
       </div>
@@ -1168,7 +1215,7 @@
       </div>
       <div class="cell"><div class="label">Total</div><div class="value">{{ stats.total_h }}</div></div>
       <div class="cell"><div class="label">Used</div><div class="value">{{ stats.used_h }}</div></div>
-      <div class="cell"><div class="label">Free</div><div class="value">{{ stats.free_h }}</div></div>
+      <div class="cell fill-rest"><div class="label">Free</div><div class="value">{{ stats.free_h }}</div></div>
 
       {% if library.total %}
       <div class="cell span-first">
@@ -1176,10 +1223,12 @@
         <div class="value">{{ library.total }}</div>
       </div>
       {% for label, n in library.parts %}
-      <div class="cell"><div class="label">{{ label }}</div><div class="value">{{ n }}</div></div>
+      <div class="cell {{ 'fill-rest' if loop.last and not library.backups else '' }}">
+        <div class="label">{{ label }}</div><div class="value">{{ n }}</div>
+      </div>
       {% endfor %}
       {% if library.backups %}
-      <div class="cell" title="Copies in a redundancy folder. Not counted as titles, since a copy is not another title.">
+      <div class="cell fill-rest" title="Copies in a redundancy folder. Not counted as titles, since a copy is not another title.">
         <div class="label">backups</div><div class="value dim">{{ library.backups }}</div>
       </div>
       {% endif %}
@@ -1576,7 +1625,7 @@
   {% endmacro %}
 
   {% for d in drives %}
-  <div class="drive" data-drive-index="{{ loop.index }}" data-drive-id="{{ d.drive_id }}"
+  <div class="drive space-{{ d.space_state }}" data-drive-index="{{ loop.index }}" data-drive-id="{{ d.drive_id }}"
        data-type="{{ d.drive_type }}"
        data-connected="{{ 1 if d.connected else 0 }}"
        data-label="{{ d.label|lower }}"
@@ -1649,25 +1698,35 @@
         <button class="drive-btn forget-btn"
                 title="Forget this drive: removes it from MediaVault's index only. Nothing on the drive itself is touched.">{{ icon_forget() }}</button>
       </div>
-      <div class="gauge {% if d.pct_used > 90 %}crit{% elif d.pct_used > 80 %}warn{% endif %}">
-        {% for i in range(40) %}<div class="seg {% if i < d.segments_filled %}filled{% endif %}"></div>{% endfor %}
+      <div class="cap-bar" title="{{ d.library_pct }}% library, {{ d.backups_pct }}% backups, {{ d.other_pct }}% other, {{ d.space.free_pct }}% free">
+        {% if d.bar.library %}<span class="cb-library" style="width:{{ d.bar.library }}%"></span>{% endif %}
+        {% if d.bar.backups %}<span class="cb-backups" style="width:{{ d.bar.backups }}%"></span>{% endif %}
+        {% if d.bar.other %}<span class="cb-other {{ 'notable' if d.other_notable else '' }}" style="width:{{ d.bar.other }}%"></span>{% endif %}
       </div>
-      {# Media against everything else. A drive mostly full of other things
-         has room to reclaim without deleting a single title. #}
+      {# Names the three bands above, and carries the free figure that now
+         shows how full the drive is. #}
       <div class="space-split">
-        <span class="ss-media" title="Total size of the library and redundancy folders MediaVault has indexed">
-          <span class="ss-dot media"></span>{{ d.media_h }} media
+        <span class="ss-library" title="The library folders MediaVault has indexed: {{ d.library_pct }}% of this drive">
+          <span class="ss-dot library"></span>{{ d.library_h }} library
         </span>
+        {% if d.bar.backups %}
+        <span class="ss-backups" title="Copies kept in this drive's redundancy folder: {{ d.backups_pct }}% of it">
+          <span class="ss-dot backups"></span>{{ d.backups_h }} backups
+        </span>
+        {% endif %}
         <span class="ss-other {{ 'notable' if d.other_notable else '' }}"
               title="Everything else on this drive: {{ d.other_pct }}% of it. MediaVault does not track what this is.">
           <span class="ss-dot other"></span>{{ d.other_h }} other
         </span>
-        {# Right beside the free figure, which is what it is about. #}
-        {% if d.low_space and not d.cold_storage %}
-        <span class="ss-low {{ 'crit' if d.space.severity == 'critical' else 'warn' }}"
-              title="Only {{ d.space.free_pct }}% free, below the {{ d.space.threshold_pct }}% this drive should keep">{{ d.space.free_pct }}%</span>
-        {% endif %}
-        <span class="ss-free">{{ d.free_h }} free</span>
+        <span class="ss-tail">
+          {# Right beside the free figure, which is what it is about. #}
+          {% if d.low_space and not d.cold_storage %}
+          <span class="ss-low {{ 'crit' if d.space.severity == 'critical' else 'warn' }}"
+                title="Only {{ d.space.free_pct }}% free, below the {{ d.space.threshold_pct }}% this drive should keep">{{ d.space.free_pct }}%</span>
+          {% endif %}
+          <span class="ss-free space-{{ d.space_state }}"
+                title="{{ d.space.free_pct }}% free. This drive should keep {{ d.space.threshold_pct }}%.">{{ d.free_h }} free</span>
+        </span>
       </div>
     </div>
 
@@ -1753,10 +1812,7 @@
 
 <div id="selection-bar" class="selection-bar">
   <span class="sel-count"><b id="sel-n">0</b> selected</span>
-  <input id="bulk-tag-input" class="bulk-input" list="tag-suggestions"
-         placeholder="tag to apply…" autocomplete="off">
-  <button class="bulk-btn apply" onclick="applyBulkTag('add')">Apply tag</button>
-  <button class="bulk-btn remove" onclick="applyBulkTag('remove')">Remove tag</button>
+  <button class="bulk-btn apply tag-bulk-btn">Tag…</button>
   <span class="bulk-sep"></span>
   <button class="bulk-btn apply" onclick="openMoveModal('move')">Move to drive…</button>
   <button class="bulk-btn" onclick="openMoveModal('copy')">Back up to drive…</button>
@@ -4202,31 +4258,6 @@ function clearSelection(){
   refreshSelectionBar();
 }
 
-async function applyBulkTag(action){
-  const input = document.getElementById('bulk-tag-input');
-  const tag = input.value.trim();
-  const boxes = selectedBoxes();
-  if(!tag){ input.focus(); return; }
-  if(boxes.length === 0) return;
-
-  const items = boxes.map(cb => ({drive_id: cb.dataset.driveId, rel_path: cb.dataset.relPath}));
-  postJSON('/api/tag/bulk', {items: items, tag: tag, action: action}, (data) => {
-    // The server reports every path it touched, copies included, and
-    // applyTagLocally owns the chips and the shield for each.
-    (data.applied_to || items).forEach(
-      t => applyTagLocally(t.drive_id, t.rel_path, tag, action));
-    input.value = '';
-    clearSelection();
-  });
-}
-
-document.addEventListener('keydown', function(e){
-  if(e.target.id === 'bulk-tag-input' && e.key === 'Enter'){
-    e.preventDefault();
-    applyBulkTag('add');
-  }
-});
-
 function makeTagChip(tag){
   const chip = document.createElement('span');
   chip.className = 'tag-chip small';
@@ -4780,7 +4811,7 @@ document.addEventListener('click', function(e){
     postTag(wrap.dataset.driveId, wrap.dataset.relPath, removeBtn.dataset.tag, 'remove');
     return;
   }
-  const addBtn = e.target.closest('.tag-add-btn');
+  const addBtn = e.target.closest(TAG_PICKER_OPENERS);
   if(addBtn){
     e.preventDefault();
     e.stopPropagation();
@@ -4792,8 +4823,14 @@ document.addEventListener('click', function(e){
 /* ---------- tag picker ----------
    One popover, moved to <body> while open and placed against the viewport.
    Picking a row applies the tag straight away; typing filters the list and
-   offers to create whatever is not in it. */
-let tagPicker = null;      // {wrap} while open
+   offers to create whatever is not in it.
+
+   It serves one title and a whole selection alike. In selection mode a row
+   ticks only when every selected title carries the tag, shows a dash when
+   some do, and clicking a dash adds to the rest rather than removing. */
+const TAG_PICKER_OPENERS = '.tag-add-btn, .tag-bulk-btn';
+
+let tagPicker = null;      // {wrap} or {bulk:true} while open
 
 function knownTags(){
   return [...document.querySelectorAll('#tag-suggestions option')]
@@ -4812,7 +4849,9 @@ function rememberTag(tag){
 
 function openTagPicker(button){
   const pop = document.getElementById('tag-picker');
-  tagPicker = {wrap: button.closest('.tags-inline')};
+  tagPicker = button.classList.contains('tag-bulk-btn')
+    ? {bulk: true}
+    : {wrap: button.closest('.tags-inline')};
   pop.classList.add('show');
 
   const input = document.getElementById('tag-picker-input');
@@ -4846,31 +4885,56 @@ function closeTagPicker(){
   tagPicker = null;
 }
 
+/* The titles the picker is acting on: one, or everything ticked. */
+function tagPickerNodes(){
+  if(tagPicker.bulk){
+    return selectedBoxes()
+      .map(cb => cb.closest('.dir-node') || cb.closest('.file-node'))
+      .filter(Boolean);
+  }
+  const node = tagPicker.wrap.closest('.dir-node') || tagPicker.wrap.closest('.file-node');
+  return node ? [node] : [];
+}
+
+/* How many of those titles carry each tag, so a row can say all, some or none. */
+function tagPickerCounts(nodes){
+  const counts = new Map();
+  nodes.forEach(n => {
+    new Set((n.dataset.tags || '').split('|').filter(Boolean).map(t => t.toLowerCase()))
+      .forEach(t => counts.set(t, (counts.get(t) || 0) + 1));
+  });
+  return counts;
+}
+
 function renderTagPicker(){
   if(!tagPicker) return;
-  const {wrap} = tagPicker;
-  const node = wrap.closest('.dir-node') || wrap.closest('.file-node');
-  const applied = new Set((node ? node.dataset.tags || '' : '')
-    .split('|').filter(Boolean).map(t => t.toLowerCase()));
+  const nodes = tagPickerNodes();
+  const counts = tagPickerCounts(nodes);
+  const total = nodes.length;
+  const stateOf = tag => {
+    const n = counts.get(tag.toLowerCase()) || 0;
+    return n === 0 ? 'off' : n === total ? 'on' : 'some';
+  };
 
   const query = document.getElementById('tag-picker-input').value.trim();
   const list = document.getElementById('tag-picker-list');
   const foot = document.getElementById('tag-picker-foot');
   list.innerHTML = '';
 
+  const rank = {on: 0, some: 1, off: 2};
   const matches = knownTags()
     .filter(t => !query || t.toLowerCase().includes(query.toLowerCase()))
     .sort((a, b) => {
-      // Already on this title first, so removing is as quick as adding.
-      const on = applied.has(b.toLowerCase()) - applied.has(a.toLowerCase());
-      return on || a.localeCompare(b);
+      // Already applied first, so removing is as quick as adding.
+      return rank[stateOf(a)] - rank[stateOf(b)] || a.localeCompare(b);
     });
 
   const exact = knownTags().some(t => t.toLowerCase() === query.toLowerCase());
   if(query && !exact){
-    list.appendChild(tagPickerRow(query, false, 'new tag', true));
+    list.appendChild(tagPickerRow(query, 'off', 'new tag', true));
   }
-  matches.forEach(t => list.appendChild(tagPickerRow(t, applied.has(t.toLowerCase()))));
+  matches.forEach(t => list.appendChild(
+    tagPickerRow(t, stateOf(t), stateOf(t) === 'some' ? `${counts.get(t.toLowerCase())} of ${total}` : null)));
 
   if(!list.children.length){
     const empty = document.createElement('div');
@@ -4878,19 +4942,27 @@ function renderTagPicker(){
     empty.textContent = 'No tags yet. Type one to create it.';
     list.appendChild(empty);
   }
-  foot.textContent = query && !exact
-    ? `Enter to add "${query}"`
-    : 'Click to add or remove. Click away when done.';
+  if(query && !exact){
+    foot.textContent = `Enter to add "${query}"`;
+  } else if(tagPicker.bulk){
+    foot.textContent = `Click to add or remove on ${total} selected.`;
+  } else {
+    foot.textContent = 'Click to add or remove. Click away when done.';
+  }
 }
 
-function tagPickerRow(tag, isOn, note, isNew){
+/* state is 'on', 'some' or 'off'. A dash means only part of the selection has
+   it, and clicking that adds to the rest, which is the only useful move. */
+function tagPickerRow(tag, state, note, isNew){
   const row = document.createElement('button');
-  row.className = 'tag-pop-row' + (isOn ? ' on' : '') + (isNew ? ' create' : '');
+  row.className = 'tag-pop-row'
+    + (state === 'on' ? ' on' : state === 'some' ? ' some' : '')
+    + (isNew ? ' create' : '');
   row.dataset.tag = tag;
 
   const mark = document.createElement('span');
   mark.className = 'tp-mark';
-  mark.textContent = isNew ? '+' : (isOn ? '✓' : '');
+  mark.textContent = isNew ? '+' : state === 'on' ? '✓' : state === 'some' ? '–' : '';
 
   const name = document.createElement('span');
   name.className = 'tp-name';
@@ -4906,7 +4978,7 @@ function tagPickerRow(tag, isOn, note, isNew){
   row.addEventListener('click', (e) => {
     e.preventDefault();
     e.stopPropagation();
-    chooseTag(tag, isOn ? 'remove' : 'add');
+    chooseTag(tag, state === 'on' ? 'remove' : 'add');
   });
   return row;
 }
@@ -4916,13 +4988,32 @@ function tagPickerRow(tag, isOn, note, isNew){
    when you click away, which is the point at which you are done. */
 function chooseTag(tag, action){
   if(!tagPicker) return;
-  const {wrap} = tagPicker;
-  postTag(wrap.dataset.driveId, wrap.dataset.relPath, tag, action, () => {
+  const done = () => {
     if(!tagPicker) return;              // clicked away while it was in flight
     const input = document.getElementById('tag-picker-input');
     input.value = '';                   // a typed name has been used up
     renderTagPicker();                  // the tick moves to reflect the change
     input.focus({preventScroll: true});
+  };
+
+  if(!tagPicker.bulk){
+    const {wrap} = tagPicker;
+    postTag(wrap.dataset.driveId, wrap.dataset.relPath, tag, action, done);
+    return;
+  }
+
+  const items = selectedBoxes().map(
+    cb => ({drive_id: cb.dataset.driveId, rel_path: cb.dataset.relPath}));
+  if(!items.length) return;
+  // The selection is left ticked: tagging several titles is usually followed
+  // by another tag on the same set, or by moving them.
+  postJSON('/api/tag/bulk', {items: items, tag: tag, action: action}, (data) => {
+    // The server reports every path it touched, copies included, and
+    // applyTagLocally owns the chips and the shield for each.
+    (data.applied_to || items).forEach(
+      t => applyTagLocally(t.drive_id, t.rel_path, tag, action));
+    if(action === 'add') rememberTag(tag);
+    done();
   });
 }
 
@@ -4955,7 +5046,7 @@ document.addEventListener('keydown', function(e){
 });
 
 document.addEventListener('click', function(e){
-  if(tagPicker && !e.target.closest('#tag-picker') && !e.target.closest('.tag-add-btn')){
+  if(tagPicker && !e.target.closest('#tag-picker') && !e.target.closest(TAG_PICKER_OPENERS)){
     closeTagPicker();
   }
 });

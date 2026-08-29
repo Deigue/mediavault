@@ -524,6 +524,25 @@ def get_all_drives():
 
 NODE_ORDER = "ORDER BY is_dir DESC, size_bytes DESC"
 
+# A title is at depth 2. Down to there, size order answers the question the
+# tree is for: what is worth moving or deleting in one piece.
+TITLE_DEPTH = 2
+
+
+def _natural_key(name):
+    """Sort key where digit runs compare as numbers, so Season 2 comes before
+    Season 10."""
+    return [int(p) if p.isdigit() else p.lower() for p in re.split(r"(\d+)", name)]
+
+
+def _order_children(kids):
+    """Orders one level of siblings. Inside a title the contents are a
+    sequence, seasons and episodes, and a sequence is only readable in its own
+    order, so those sort by name instead of by size."""
+    if kids and kids[0]["depth"] > TITLE_DEPTH:
+        kids.sort(key=lambda k: (not k["is_dir"], _natural_key(k["name"])))
+    return kids
+
 
 def _nest(rows):
     """Turns a flat row list into nested 'children' lists. Any node whose
@@ -605,7 +624,7 @@ def get_children(parent_id):
     for k in kids:
         k["has_children"] = k["id"] in with_kids
         k["children"] = []
-    return kids
+    return _order_children(kids)
 
 
 def get_node(node_id):
@@ -1086,19 +1105,27 @@ def redundancy_summaries():
 
 def indexed_bytes_by_drive():
     """
-    How much of each drive is media MediaVault knows about.
+    How much of each drive is media MediaVault knows about, kept apart as the
+    library and the copies in redundancy folders.
 
     Sums the root folders only, since a folder's size is already the recursive
-    total of everything inside it. Covers both the library and the redundancy
-    roots, so what is left over is genuinely everything else on the drive.
+    total of everything inside it. Covers both roots, so what is left over is
+    genuinely everything else on the drive.
     """
     conn = get_conn()
     rows = conn.execute(
-        "SELECT drive_id, COALESCE(SUM(size_bytes), 0) AS bytes "
-        "FROM nodes WHERE depth = 0 GROUP BY drive_id"
+        "SELECT drive_id, root_type, COALESCE(SUM(size_bytes), 0) AS bytes "
+        "FROM nodes WHERE depth = 0 GROUP BY drive_id, root_type"
     ).fetchall()
     conn.close()
-    return {r["drive_id"]: r["bytes"] for r in rows}
+
+    out = {}
+    for r in rows:
+        bands = out.setdefault(r["drive_id"], {"library": 0, "redundancy": 0})
+        # Anything not marked as a redundancy root counts as library.
+        key = "redundancy" if r["root_type"] == "redundancy" else "library"
+        bands[key] += r["bytes"]
+    return out
 
 
 def title_counts_by_category():

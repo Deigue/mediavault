@@ -23,13 +23,12 @@ and again whenever you add, move or delete files.
 
 - **Scan** known drives, plus any connected drive with a library folder.
 - **Set up** a drive that has no library folder yet.
-- **Drill down** to individual files, even while the drive is unplugged.
+- **Explore** files even while the drive is unplugged.
 - **Open** folders in your file manager and files in their usual app.
 - **Delete** to the Recycle Bin or permanently, one item or a selection.
 - **Move** a title to another drive, landing in the matching category.
 - **Back up** a title into another drive's redundancy folder.
-- **Tag** titles, one or many, and filter by tag. Two tags change behaviour:
-  **★ Star** marks a title worth protecting, **▶ Watching** marks one in use.
+- **Tag** titles, one or many, and filter by tag. **★ Star** marks a title worth protecting, **▶ Watching** marks one in use.
 - **Search** across every drive and jump to a result in the tree.
 - **See what is backed up**: green shield for a complete copy elsewhere,
   amber for partial, purple when a title is merely split across drives.
@@ -38,7 +37,8 @@ and again whenever you add, move or delete files.
 - **Spot old folder layouts**, such as an anime with its seasons buried
   inside it, flagged with a wrench so you can tidy them up.
 - **Get suggestions** for what to move or back up, each with its reasoning.
-- **Set each drive's type**, which sets how full it is allowed to get.
+- **See where a drive's space went**: library, backups and untracked space.
+- **Set each drive's type**, which sets how full it is allowed to get before warning.
 - **Back up the database** to any rclone destination, and rename or forget a
   drive.
 
