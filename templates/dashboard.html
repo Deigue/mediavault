@@ -824,8 +824,9 @@
   .drive:not(.open) .drive-head{ border-radius:9px; }
   .drive-body{ border-radius:0 0 9px 9px; }
   /* A drive drops out entirely when nothing inside it matches the title
-     filters, or when the drive filters exclude the card itself. */
-  .drive.filtered-out, .drive.drive-hidden{ display:none; }
+     filters, or when the drive filters exclude the card itself. Hidden has to
+     win over the grid layout rules, which are the more specific selectors. */
+  .drive.filtered-out, .drive.drive-hidden{ display:none !important; }
   .drive-head{ padding:14px 18px 13px; cursor:pointer; display:flex; flex-direction:column; gap:8px; }
   .drive-top-row{ display:flex; justify-content:space-between; align-items:baseline; gap:14px; }
   /* min-width:0 lets a long name ellipsis rather than widen the row and push
@@ -1019,6 +1020,12 @@
   .node-btn.move-btn:hover{ color:#FBBF24; background:rgba(251,191,36,0.16); }
   /* Green for back up, matching the shield it produces. */
   .node-btn.copy-btn:hover{ color:#4ADE80; background:rgba(74,222,128,0.16); }
+  /* Violet for promote, the colour backups already carry on the capacity bar.
+     It is the only action that changes what a title is rather than where it
+     lives, and it is offered on so few rows that it carries its tint even at
+     rest, not just on hover. */
+  .node-btn.promote-btn:not(:disabled){ color:#C4B5FD; }
+  .node-btn.promote-btn:not(:disabled):hover{ color:#DDD6FE; background:rgba(196,181,253,0.18); }
   .node-btn.del-btn{ color:#B4564A; }
   .node-btn.del-btn:hover{ color:#FF6B58; background:rgba(232,96,76,0.18); }
 
@@ -1324,27 +1331,27 @@
          style="grid-template-columns: 1.5fr repeat({{ overview_cols - 1 }}, minmax(0, 1fr));">
       <div class="cell gauge-cell">
         <div class="label">Overall capacity</div>
-        <div class="cap-bar total {% if stats.pct_used > 90 %}crit{% elif stats.pct_used > 80 %}warn{% endif %}">
+        <div id="overall-bar" class="cap-bar total {% if stats.pct_used > 90 %}crit{% elif stats.pct_used > 80 %}warn{% endif %}">
           <span class="cb-used" style="width:{{ stats.pct_used }}%"></span>
         </div>
-        <div class="gauge-caption"><span>{{ stats.pct_used }}% used</span><span>{{ stats.free_h }} free</span></div>
+        <div class="gauge-caption"><span id="overall-pct">{{ stats.pct_used }}% used</span><span id="overall-free">{{ stats.free_h }} free</span></div>
       </div>
       <div class="cell">
         <div class="label">Drives</div>
         <div class="value">{{ stats.drive_count }}</div>
         <div class="cell-sub">{{ stats.connected_count }} connected</div>
       </div>
-      <div class="cell"><div class="label">Total</div><div class="value">{{ stats.total_h }}</div></div>
-      <div class="cell"><div class="label">Used</div><div class="value">{{ stats.used_h }}</div></div>
-      <div class="cell fill-rest"><div class="label">Free</div><div class="value">{{ stats.free_h }}</div></div>
+      <div class="cell"><div class="label">Total</div><div class="value" id="stat-total">{{ stats.total_h }}</div></div>
+      <div class="cell"><div class="label">Used</div><div class="value" id="stat-used">{{ stats.used_h }}</div></div>
+      <div class="cell fill-rest"><div class="label">Free</div><div class="value" id="stat-free">{{ stats.free_h }}</div></div>
 
       {% if library.total %}
       <div class="cell span-first">
         <div class="label">Titles</div>
-        <div class="value">{{ library.total }}</div>
+        <div class="value" id="stat-titles">{{ library.total }}</div>
       </div>
-      {% for label, n in library.parts %}
-      <div class="cell {{ 'fill-rest' if loop.last and not library.backups else '' }}">
+      {% for key, label, n in library.parts %}
+      <div class="cell {{ 'fill-rest' if loop.last and not library.backups else '' }}" data-bucket="{{ key }}">
         <div class="label">{{ label }}</div><div class="value">{{ n }}</div>
       </div>
       {% endfor %}
@@ -1786,8 +1793,11 @@
             <span class="cat-count">{{ node.title_count }} {{ node.title_word }}</span>
           {% endif %}
           {% if node.depth == 2 %}{{ node_meta(node) }}{% endif %}
+          {# Inside name-wrap, so a folder's actions sit just after its tags
+             exactly as a file's do, rather than being pushed to the far
+             right by name-wrap growing to fill the row. #}
+          {{ node_actions(node) }}
         </span>
-        {{ node_actions(node) }}
         <span class="bar-wrap"><span class="bar-fill" style="width:{{ [node.pct_of_drive*3, 100]|min }}%"></span></span>
         <span class="size">{{ node.size_h }}</span>
         {{ node_danger(node) }}
@@ -1855,8 +1865,8 @@
       <div class="drive-counts">
         {% if d.counts.total %}
         <span class="dc-total">{{ d.counts.total }} titles</span>
-        {% for label, n in d.counts.parts %}
-        <span class="dc-chip"><b>{{ n }}</b> {{ label }}</span>
+        {% for key, label, n in d.counts.parts %}
+        <span class="dc-chip" data-bucket="{{ key }}"><b>{{ n }}</b> {{ label }}</span>
         {% endfor %}
         {% endif %}
 
@@ -2194,6 +2204,15 @@
 </footer>
 
 <script>
+/* The row a control belongs to, folder or file alike.
+
+   Always one closest() over both, never .dir-node tested first: a file at the
+   title level sits inside its category's <details>, so asking for .dir-node
+   first walks straight past its own row and lands on the folder above. That
+   put a file's tag chip on the first title in its category, and pointed a
+   file's delete at the whole category row. */
+const NODE_SEL = '.file-node, .dir-node';
+
 /* The drive header expands the drive, but it also hosts the rename and
    delete controls. Rather than an inline onclick (which would fire before
    any delegated handler got the chance to stop it), everything in the
@@ -2870,7 +2889,7 @@ function openDeleteModal(btn){
   const isDir = btn.dataset.isDir === '1';
   pendingDelete = {
     items: [{nodeId: Number(btn.dataset.nodeId),
-             el: btn.closest('.dir-node') || btn.closest('.file-node')}],
+             el: btn.closest(NODE_SEL)}],
     name: btn.dataset.name
   };
   document.getElementById('del-kind').textContent = isDir ? 'folder' : 'file';
@@ -2889,7 +2908,7 @@ function openBulkDeleteModal(){
   pendingDelete = {
     items: boxes.map(b => ({
       nodeId: Number(b.dataset.nodeId),
-      el: b.closest('.dir-node') || b.closest('.file-node')
+      el: b.closest(NODE_SEL)
     })),
     name: `${boxes.length} titles`
   };
@@ -2943,6 +2962,7 @@ function confirmDelete(mode){
       });
       clearSelection();
       closeDeleteModal();
+      applyDeleteRefresh(data.refresh);
       done();
 
       if(data.failed){
@@ -2956,6 +2976,145 @@ function confirmDelete(mode){
       }
     }, done);
 }
+
+/* ---------- redrawing after a delete ----------
+   A delete is the one change where the page already knows everything that
+   moved: the server corrected the index and re-read the drive's free space as
+   part of carrying it out. So every figure is patched from the reply, and a
+   delete never costs a rescan.
+
+   A delete can only ever take titles away, so a count can fall to zero but a
+   new category or chip can never appear. That is why nothing here inserts. */
+function applyDeleteRefresh(refresh){
+  if(!refresh) return;
+  (refresh.drives || []).forEach(d => {
+    const card = document.querySelector(`.drive[data-drive-id="${CSS.escape(d.drive_id)}"]`);
+    if(!card) return;
+
+    // Sorting reads these, so they have to move with the figures.
+    card.dataset.free = d.free_bytes;
+    card.dataset.freepct = d.free_pct;
+    card.dataset.used = d.pct_used;
+    card.dataset.size = d.total_bytes;
+
+    ['ok', 'warn', 'critical', 'cold', 'unknown']
+      .forEach(s => card.classList.remove('space-' + s));
+    card.classList.add('space-' + d.space_state);
+
+    const stats = card.querySelector('.drive-stats');
+    if(stats){
+      stats.innerHTML = `<span class="used">${escapeHtml(d.used_h)}</span> / `
+        + `${escapeHtml(d.total_h)} <span class="mono">(${pct1(d.pct_used)}%)</span>`;
+    }
+
+    setCapacityBar(card.querySelector('.cap-bar'), d);
+    setSpaceSplit(card.querySelector('.space-split'), d);
+    setDriveCounts(card.querySelector('.drive-counts'), d.counts);
+    setCategoryHeaders(card, d.categories || []);
+  });
+
+  setOverallCapacity(refresh.stats, refresh.library);
+}
+
+function setCapacityBar(bar, d){
+  if(!bar) return;
+  bar.innerHTML = [
+    ['cb-library', d.bar.library],
+    ['cb-backups', d.bar.backups],
+    ['cb-other' + (d.other_notable ? ' notable' : ''), d.bar.other],
+  ].filter(([, pct]) => pct)
+   .map(([cls, pct]) => `<span class="${cls}" style="width:${pct}%"></span>`)
+   .join('');
+  bar.title = `${pct1(d.library_pct)}% library, ${pct1(d.backups_pct)}% backups, `
+    + `${pct1(d.other_pct)}% other, ${pct1(d.free_pct)}% free`;
+}
+
+function setSpaceSplit(split, d){
+  if(!split) return;
+  const freePct = pct1(d.free_pct);
+  let html = `<span class="ss-library" title="The library folders MediaVault has indexed: ${pct1(d.library_pct)}% of this drive">`
+    + `<span class="ss-dot library"></span>${escapeHtml(d.library_h)} library</span>`;
+  if(d.bar.backups){
+    html += `<span class="ss-backups" title="Copies kept in this drive's redundancy folder: ${pct1(d.backups_pct)}% of it">`
+      + `<span class="ss-dot backups"></span>${escapeHtml(d.backups_h)} backups</span>`;
+  }
+  html += `<span class="ss-other${d.other_notable ? ' notable' : ''}" title="Everything else on this drive: ${pct1(d.other_pct)}% of it. MediaVault does not track what this is.">`
+    + `<span class="ss-dot other"></span>${escapeHtml(d.other_h)} other</span>`
+    + '<span class="ss-tail">'
+    + (d.show_low
+        ? `<span class="ss-low ${d.severity === 'critical' ? 'crit' : 'warn'}" title="Only ${freePct}% free, below the ${d.threshold_pct}% this drive should keep">${freePct}%</span>`
+        : '')
+    + `<span class="ss-free space-${d.space_state}" title="${freePct}% free. This drive should keep ${d.threshold_pct}%.">${escapeHtml(d.free_h)} free</span>`
+    + '</span>';
+  split.innerHTML = html;
+}
+
+/* The chips are a plain flex row, so one that empties simply goes. */
+function setDriveCounts(row, counts){
+  if(!row) return;
+  const total = row.querySelector('.dc-total');
+  if(total) total.textContent = `${counts.total} titles`;
+  const byKey = new Map(counts.parts.map(([key, label, n]) => [key, {label, n}]));
+  row.querySelectorAll('.dc-chip').forEach(chip => {
+    const part = byKey.get(chip.dataset.bucket);
+    if(!part){ chip.remove(); return; }
+    chip.innerHTML = `<b>${part.n}</b> ${escapeHtml(part.label)}`;
+  });
+  if(!counts.total && total) total.remove();
+}
+
+function setCategoryHeaders(card, categories){
+  categories.forEach(c => {
+    const wrap = card.querySelector(
+      `.node[data-node-id="${c.node_id}"] > summary > .name-wrap`);
+    if(!wrap) return;
+    let chip = wrap.querySelector(':scope > .cat-count');
+    if(!c.count){ if(chip) chip.remove(); return; }
+    if(!chip){
+      chip = document.createElement('span');
+      chip.className = 'cat-count';
+      wrap.appendChild(chip);
+    }
+    chip.textContent = `${c.count} ${c.word}`;
+  });
+}
+
+/* The header cells sit in a grid sized once by the server, so a bucket that
+   empties keeps its cell at zero. Removing it would leave a blank column. */
+function setOverallCapacity(stats, library){
+  if(stats){
+    const bar = document.getElementById('overall-bar');
+    if(bar){
+      const used = bar.querySelector('.cb-used');
+      if(used) used.style.width = stats.pct_used + '%';
+      bar.classList.toggle('crit', stats.pct_used > 90);
+      bar.classList.toggle('warn', stats.pct_used > 80 && stats.pct_used <= 90);
+    }
+    setTextById('overall-pct', `${pct1(stats.pct_used)}% used`);
+    setTextById('overall-free', `${stats.free_h} free`);
+    setTextById('stat-total', stats.total_h);
+    setTextById('stat-used', stats.used_h);
+    setTextById('stat-free', stats.free_h);
+  }
+  if(!library) return;
+  setTextById('stat-titles', library.total);
+  const byKey = new Map(library.parts.map(([key, label, n]) => [key, {label, n}]));
+  document.querySelectorAll('.overview .cell[data-bucket]').forEach(cell => {
+    const part = byKey.get(cell.dataset.bucket);
+    cell.querySelector('.label').textContent = part ? part.label : cell.querySelector('.label').textContent;
+    cell.querySelector('.value').textContent = part ? part.n : 0;
+  });
+}
+
+function setTextById(id, text){
+  const el = document.getElementById(id);
+  if(el) el.textContent = text;
+}
+
+/* The server rounds to one decimal, but JSON drops a trailing zero and 10.0
+   would arrive as 10. Put it back, or a refreshed figure reads differently
+   from the same figure rendered by the page. */
+function pct1(n){ return Number(n).toFixed(1); }
 
 function flashToast(message){
   const el = document.createElement('div');
@@ -3740,7 +3899,7 @@ function syncTreeTag(candidate, tag, turningOn){
   if(!wrap) return;
   const toggle = wrap.querySelector(`.sys-tag[data-tag="${CSS.escape(tag)}"]`);
   if(toggle) toggle.classList.toggle('on', turningOn);
-  const node = wrap.closest('.dir-node') || wrap.closest('.file-node');
+  const node = wrap.closest(NODE_SEL);
   if(node){
     const tags = new Set((node.dataset.tags || '').split('|').filter(Boolean));
     if(turningOn) tags.add(tag); else tags.delete(tag);
@@ -5594,7 +5753,7 @@ document.addEventListener('click', async function(e){
         + `under ${p.category}.`,
     list: `${p.from_rel}\n    becomes\n${p.to_rel}`,
     note: 'A rename within the drive, so nothing is copied and it takes no extra '
-        + 'space. Rescan afterwards to see it in its new place.',
+        + 'space.',
     confirmLabel: 'Promote'
   });
   if(!ok) return;
@@ -5612,8 +5771,10 @@ document.addEventListener('click', async function(e){
   }
   if(!done.ok){ alert(done.error); return; }
   flashToast(`${p.name} is now a library title on ${p.drive_label}`);
-  // The tree still shows it under the redundancy root, so reload once the
-  // toast has been seen.
+  // The row has to cross from the backup tree to the library one, which is a
+  // different branch of a different root, so this reloads rather than moving
+  // the node by hand. The index is already correct by now, so the reload
+  // shows it under its category. Open drives and scroll position survive.
   setTimeout(reloadNow, 1400);
 });
 
@@ -5705,10 +5866,10 @@ function closeTagPicker(){
 function tagPickerNodes(){
   if(tagPicker.bulk){
     return selectedBoxes()
-      .map(cb => cb.closest('.dir-node') || cb.closest('.file-node'))
+      .map(cb => cb.closest(NODE_SEL))
       .filter(Boolean);
   }
-  const node = tagPicker.wrap.closest('.dir-node') || tagPicker.wrap.closest('.file-node');
+  const node = tagPicker.wrap.closest(NODE_SEL);
   return node ? [node] : [];
 }
 
@@ -5879,7 +6040,7 @@ function nodesFor(driveId, relPath){
   return [...document.querySelectorAll(
     `.tags-inline[data-drive-id="${CSS.escape(driveId)}"]`
     + `[data-rel-path="${CSS.escape(relPath)}"]`)]
-    .map(w => w.closest('.dir-node') || w.closest('.file-node'))
+    .map(w => w.closest(NODE_SEL))
     .filter(Boolean);
 }
 

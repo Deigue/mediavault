@@ -68,6 +68,19 @@ def _run(job, targets):
                 job["current"] = job["drives"][index]["label"]
             _log(job, f"Scanning {target['root']} ...")
 
+            # The walk itself cannot be interrupted, so a drive that is not
+            # answering is skipped before it starts rather than stalling the
+            # rest of the run. The probe doubles as the thing that wakes a
+            # sleeping share, so a slow but healthy drive still gets scanned.
+            if not scanner.reachable(target["root"]):
+                with _lock:
+                    job["drives"][index].update(
+                        status="failed", detail="no answer, skipped")
+                    job["completed"] = index + 1
+                _log(job, f"  SKIPPED: no answer from {target['root']}. Its "
+                          f"index is left as it was.")
+                continue
+
             try:
                 # Repeat whatever options this drive was last scanned with, so
                 # a rescan cannot quietly drop folders from the index.

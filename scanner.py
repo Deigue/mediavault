@@ -466,10 +466,14 @@ def list_mounted_roots():
 #
 # The two timeouts differ because a local disk answers in milliseconds, while
 # a sleeping share or a phone on power-save routinely takes seconds and is
-# perfectly healthy.
+# perfectly healthy. The network figure is generous on purpose: a phone whose
+# session has gone idle has been measured taking over 40 seconds to answer a
+# single small read, and cutting it off early reported a healthy drive as
+# unplugged. Nothing serving a page waits on this, so the cost of being
+# patient is a background thread rather than a slow page.
 PROBE_TIMEOUT_SECONDS = 2.5
-NETWORK_PROBE_TIMEOUT_SECONDS = 10.0
-UNRESPONSIVE_COOLDOWN_SECONDS = 30.0
+NETWORK_PROBE_TIMEOUT_SECONDS = 60.0
+UNRESPONSIVE_COOLDOWN_SECONDS = 60.0
 
 
 def probe_timeout_for(root):
@@ -512,6 +516,18 @@ def unresponsive_roots():
     """Mounted roots that could not be read, so the UI can say so rather than
     silently dropping a drive that is plainly visible in Explorer."""
     return sorted(r for r in _unresponsive if is_unresponsive(r))
+
+
+def reachable(root):
+    """
+    Can this root be listed inside its probe deadline?
+
+    Used before scanning a drive, because the walk itself has no timeout: one
+    share whose host has gone away would otherwise stall the whole run with
+    no way to tell which drive was to blame. Waking a sleeping share counts as
+    reachable, since this probe is what wakes it.
+    """
+    return root in probe_roots([root], ensure_readable)
 
 
 def probe_roots(roots, work, timeout=probe_timeout_for):
@@ -578,12 +594,13 @@ _network_cache = {"checked_at": 0.0, "drives": {}, "refreshing": False, "ever": 
 
 
 def read_marker(root):
-    with open(os.path.join(root, driveid.MARKER_NAME), "r") as f:
-        return f.read().strip()
+    """This drive's id, by marker file or by fingerprint. Runs inside
+    probe_roots, so the disk_usage call it needs is under the same deadline."""
+    return driveid.identify(root, shutil.disk_usage(root).total)
 
 
 def _probe_markers(roots):
-    """{drive_id: root} for the roots that carry a marker file."""
+    """{drive_id: root} for every root that answered with an id."""
     found = {}
     for root, drive_id in probe_roots(roots, read_marker).items():
         if drive_id:
@@ -609,19 +626,21 @@ def _network_drives(roots, blocking):
     """
     The network half of the answer, refreshed off the request thread.
 
-    blocking is only true the first time, when there is no previous answer to
-    serve and returning nothing would look like the drives are unplugged.
+    blocking is for the callers that must be right before they act, such as
+    checking a drive is really there before moving files onto it. Rendering
+    never sets it: a page shows the last answer and picks the new one up from
+    the connection poll, rather than holding the first load of the day open
+    while a phone wakes up.
     """
     with _connected_lock:
         fresh = time.monotonic() - _network_cache["checked_at"] < NETWORK_CACHE_SECONDS
         if fresh or not roots:
             return dict(_network_cache["drives"])
-        must_wait = blocking and not _network_cache["ever"]
         already = _network_cache["refreshing"]
-        if not must_wait and not already:
+        if not blocking and not already:
             _network_cache["refreshing"] = True
 
-    if must_wait:
+    if blocking:
         _refresh_network(roots)
         with _connected_lock:
             return dict(_network_cache["drives"])
@@ -633,16 +652,18 @@ def _network_drives(roots, blocking):
         return dict(_network_cache["drives"])
 
 
-def get_connected_drives(max_age=CONNECTED_CACHE_SECONDS, include_network=True):
+def get_connected_drives(max_age=CONNECTED_CACHE_SECONDS, include_network=True,
+                         wait_for_network=False):
     """
     Which known drives are plugged in right now: {drive_id: root_path}.
 
-    Reads the marker file from every mounted volume, since last_seen_path can
-    be stale or the letter may now belong to a different drive.
+    Identifies each mounted volume from the drive itself, since last_seen_path
+    can be stale or the letter may now belong to a different drive.
 
     Local volumes are read on the spot and cached briefly, because search
     calls this on every keystroke. Network drives are refreshed in the
-    background, so a sleeping host can never hold up a page load.
+    background, so a sleeping host can never hold up a page load. Set
+    wait_for_network when the answer has to be right before acting on it.
     """
     now = time.monotonic()
     local_roots, network_roots = _split_roots()
@@ -660,7 +681,7 @@ def get_connected_drives(max_age=CONNECTED_CACHE_SECONDS, include_network=True):
         return local
 
     found = dict(local)
-    found.update(_network_drives(network_roots, blocking=True))
+    found.update(_network_drives(network_roots, blocking=wait_for_network))
     return found
 
 
@@ -680,8 +701,14 @@ def drive_letter_for(root_path):
 
 
 def find_mounted_drive(drive_id, max_age=CONNECTED_CACHE_SECONDS):
-    """Where this drive is plugged in right now, or None if it is not."""
-    return get_connected_drives(max_age).get(drive_id)
+    """
+    Where this drive is plugged in right now, or None if it is not.
+
+    Waits for the network answer rather than serving a stale one: every caller
+    is about to read or write the drive, and wrongly calling it unplugged
+    refuses an operation that would have worked.
+    """
+    return get_connected_drives(max_age, wait_for_network=True).get(drive_id)
 
 
 # GetDriveTypeW values. Network drives are scannable so a disk in another PC,
@@ -812,7 +839,9 @@ def find_scannable_drives():
     Only lettered volumes are visible to Windows here, not bare UNC paths.
     """
     known = {d["drive_id"]: d for d in db.get_all_drives()}
-    connected = get_connected_drives(max_age=0)
+    # A scan is about to read these drives, so it is worth waking a sleeping
+    # one to find out whether it is there rather than leaving it out.
+    connected = get_connected_drives(max_age=0, wait_for_network=True)
     by_root = {root: drive_id for drive_id, root in connected.items()}
 
     found = []

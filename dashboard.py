@@ -233,8 +233,10 @@ def summarise_counts(per_category):
     """
     {category: n} folded into the buckets shown in the UI.
 
-    Returns {'total': n, 'parts': [(label, n), ...]} with the empty buckets
-    dropped, so a drive holding only anime says so rather than listing zeros.
+    Returns {'total': n, 'parts': [(key, label, n), ...]} with the empty
+    buckets dropped, so a drive holding only anime says so rather than
+    listing zeros. The key comes along because the label is already
+    singular or plural, so only the key is stable enough to update against.
     """
     totals = {}
     for category, n in (per_category or {}).items():
@@ -243,9 +245,71 @@ def summarise_counts(per_category):
         entry["n"] += n
 
     order = [key for key, _label, _m in tagging.CATEGORY_BUCKETS]
-    parts = [(tagging.count_label(totals[k]["label"], totals[k]["n"]), totals[k]["n"])
+    parts = [(k, tagging.count_label(totals[k]["label"], totals[k]["n"]), totals[k]["n"])
              for k in order if k in totals and totals[k]["n"]]
-    return {"total": sum(n for _label, n in parts), "parts": parts}
+    return {"total": sum(n for _k, _label, n in parts), "parts": parts}
+
+
+def capacity_fields(drive, bands):
+    """
+    Every capacity figure a drive card shows, worked out from stored bytes.
+
+    Shared by the page render and the refresh after a delete, so a delete can
+    never redraw the bar with different arithmetic than the page first used.
+    drive_type, cold_storage and allows_cold must already be set.
+    """
+    total = drive["total_bytes"] or 1
+    used = drive["used_bytes"] or 0
+    free = drive["free_bytes"] or 0
+
+    # The three bands the capacity bar draws: the library, the copies kept
+    # beside it in redundancy folders, and everything MediaVault does not
+    # track. A drive full of that last one has room to reclaim without
+    # deleting a single title. Widths stay unrounded, or they drift.
+    library = bands.get("library", 0)
+    backups = bands.get("redundancy", 0)
+    other = max(0, used - library - backups)
+    bar = {
+        "library": 100.0 * library / total,
+        "backups": 100.0 * backups / total,
+        "other": 100.0 * other / total,
+    }
+    other_pct = round(bar["other"], 1)
+
+    space = drivetypes.evaluate(drive["drive_type"], free, total,
+                                drive["cold_storage"])
+    # Drives the border and the free figure. A drive with no capacity figures
+    # has nothing to judge, so it stays neutral rather than reading as
+    # critically full on a free percentage of zero. Cold storage is kept full
+    # on purpose and its warnings are off, so it stays neutral however little
+    # is left. evaluate() still calls it critical below the 3% threshold,
+    # which is right for the message in the card but wrong for a border that
+    # means "this needs attention".
+    if not drive["total_bytes"]:
+        space_state = "unknown"
+    elif drive["cold_storage"] and drive["allows_cold"]:
+        space_state = "cold"
+    else:
+        space_state = space["severity"]
+
+    return {
+        "pct_used": round(100 * used / total, 1),
+        "space": space,
+        "low_space": space["low"],
+        "space_state": space_state,
+        "total_h": human(total),
+        "used_h": human(used),
+        "free_h": human(free),
+        "library_h": human(library),
+        "backups_h": human(backups),
+        "other_h": human(other),
+        "bar": bar,
+        "library_pct": round(bar["library"], 1),
+        "backups_pct": round(bar["backups"], 1),
+        "other_pct": other_pct,
+        # Only interesting once it is both large and a real share of the drive.
+        "other_notable": other > 20 * 2**30 and other_pct >= 15,
+    }
 
 
 def raw_backup_state(duplicates):
@@ -367,11 +431,6 @@ def home():
         d["external"] = scanner.is_external(mount) if mount else False
         d["bus_type"] = scanner.get_bus_type(mount) if mount else None
 
-        total = d["total_bytes"] or 1
-        used = d["used_bytes"] or 0
-        free = d["free_bytes"] or 0
-        d["pct_used"] = round(100 * used / total, 1)
-
         d["drive_type"] = drivetypes.detect(
             label=d["label"], removable=False, stored=d.get("drive_type"),
             bus_type=d["bus_type"],
@@ -381,54 +440,14 @@ def home():
         d["type_label"] = drivetypes.rule_for(d["drive_type"])["label"]
         d["cold_storage"] = bool(d.get("cold_storage"))
         d["allows_cold"] = drivetypes.allows_cold_storage(d["drive_type"])
-        space = drivetypes.evaluate(d["drive_type"], free, total, d["cold_storage"])
-        d["space"] = space
-        d["low_space"] = space["low"]
-        # Drives the border and the free figure. A drive with no capacity
-        # figures has nothing to judge, so it stays neutral rather than
-        # reading as critically full on a free percentage of zero.
-        # Cold storage is kept full on purpose and its warnings are off, so
-        # it stays neutral however little is left. evaluate() still calls it
-        # critical below the 3% threshold, which is right for the message in
-        # the card but wrong for a border that means "this needs attention".
-        if not d["total_bytes"]:
-            d["space_state"] = "unknown"
-        elif d["cold_storage"] and d["allows_cold"]:
-            d["space_state"] = "cold"
-        else:
-            d["space_state"] = space["severity"]
-        d["total_h"] = human(total)
-        d["used_h"] = human(used)
-        d["free_h"] = human(free)
+        d.update(capacity_fields(d, media_by_drive.get(d["drive_id"], {})))
         d["scanned_ago"] = ago(d.get("last_scanned"))
-
-        # The three bands the capacity bar draws: the library, the copies kept
-        # beside it in redundancy folders, and everything MediaVault does not
-        # track. A drive full of that last one has room to reclaim without
-        # deleting a single title. Widths stay unrounded, or they drift.
-        bands = media_by_drive.get(d["drive_id"], {})
-        library = bands.get("library", 0)
-        backups = bands.get("redundancy", 0)
-        other = max(0, used - library - backups)
-        d["library_h"] = human(library)
-        d["backups_h"] = human(backups)
-        d["other_h"] = human(other)
-        d["bar"] = {
-            "library": 100.0 * library / total,
-            "backups": 100.0 * backups / total,
-            "other": 100.0 * other / total,
-        }
-        d["library_pct"] = round(d["bar"]["library"], 1)
-        d["backups_pct"] = round(d["bar"]["backups"], 1)
-        d["other_pct"] = round(d["bar"]["other"], 1)
-        # Only interesting once it is both large and a real share of the drive.
-        d["other_notable"] = other > 20 * 2**30 and d["other_pct"] >= 15
 
         tags_by_path = db.get_tags_for_drive(d["drive_id"])
         hints = structure.hints_for_drive(d["drive_id"], hint_conn)
         tree = db.get_tree_for_drive(d["drive_id"])
-        annotate_tree(tree, total, d["drive_id"], tags_by_path, dup_map, hints,
-                      d["connected"], library_keys)
+        annotate_tree(tree, d["total_bytes"] or 1, d["drive_id"], tags_by_path,
+                      dup_map, hints, d["connected"], library_keys)
         d["tree"] = tree
         d["hint_count"] = len(hints)
         d["counts"] = summarise_counts(counts_by_drive.get(d["drive_id"]))
@@ -718,6 +737,93 @@ def api_sacrifice():
     return jsonify({"ok": True, "result": result})
 
 
+def delete_refresh(drive_ids):
+    """
+    What the page needs to redraw after a delete: capacity and title counts
+    for each drive touched, plus the totals in the header.
+
+    delete_node has already corrected the index and re-read the drive's free
+    space, so this only reads those back. Nothing here touches the disk, and
+    a delete is never a reason to rescan: we know exactly what went.
+    """
+    counts_by_drive = db.title_counts_by_category()
+    media_by_drive = db.indexed_bytes_by_drive()
+    connected = scanner.get_connected_drives()
+
+    drives = []
+    for drive_id in drive_ids:
+        d = db.get_drive(drive_id)
+        if not d:
+            continue
+        mount = connected.get(drive_id)
+        d["drive_type"] = drivetypes.detect(
+            label=d["label"], removable=False, stored=d.get("drive_type"),
+            bus_type=scanner.get_bus_type(mount) if mount else None,
+        )
+        d["cold_storage"] = bool(d.get("cold_storage"))
+        d["allows_cold"] = drivetypes.allows_cold_storage(d["drive_type"])
+        fields = capacity_fields(d, media_by_drive.get(drive_id, {}))
+        drives.append({
+            "drive_id": drive_id,
+            "free_bytes": d["free_bytes"] or 0,
+            "total_bytes": d["total_bytes"] or 0,
+            "free_pct": fields["space"]["free_pct"],
+            "threshold_pct": fields["space"]["threshold_pct"],
+            "severity": fields["space"]["severity"],
+            "pct_used": fields["pct_used"],
+            "space_state": fields["space_state"],
+            # When the low badge belongs beside the free figure. Cold storage
+            # is full on purpose, so the rule stays here rather than in the page.
+            "show_low": fields["low_space"] and not d["cold_storage"],
+            "total_h": fields["total_h"],
+            "used_h": fields["used_h"],
+            "free_h": fields["free_h"],
+            "library_h": fields["library_h"],
+            "backups_h": fields["backups_h"],
+            "other_h": fields["other_h"],
+            "bar": fields["bar"],
+            "library_pct": fields["library_pct"],
+            "backups_pct": fields["backups_pct"],
+            "other_pct": fields["other_pct"],
+            "other_notable": fields["other_notable"],
+            "counts": summarise_counts(counts_by_drive.get(drive_id)),
+            # Per category folder, so each header in the tree can be set
+            # without working out the wording in the page.
+            "categories": [
+                {
+                    "node_id": c["node_id"],
+                    "count": c["n"],
+                    "word": tagging.count_label(
+                        tagging.bucket_for_category(c["category"])[1], c["n"]),
+                }
+                for c in db.category_counts_for_drive(drive_id)
+            ],
+        })
+
+    all_drives = db.get_all_drives()
+    grand_total = sum(x["total_bytes"] or 0 for x in all_drives)
+    grand_used = sum(x["used_bytes"] or 0 for x in all_drives)
+    grand_free = sum(x["free_bytes"] or 0 for x in all_drives)
+
+    combined = {}
+    for per_category in counts_by_drive.values():
+        for category, n in per_category.items():
+            combined[category] = combined.get(category, 0) + n
+    library = summarise_counts(combined)
+    library["backups"] = sum(s["titles"] for s in db.redundancy_summaries().values())
+
+    return {
+        "drives": drives,
+        "library": library,
+        "stats": {
+            "total_h": human(grand_total),
+            "used_h": human(grand_used),
+            "free_h": human(grand_free),
+            "pct_used": round(100 * grand_used / grand_total, 1) if grand_total else 0,
+        },
+    }
+
+
 @app.route("/api/node/delete", methods=["POST"])
 def api_node_delete():
     """Delete the file or folder behind a node. mode is 'bin', recoverable
@@ -738,7 +844,8 @@ def api_node_delete():
         return jsonify({"ok": False, "error": str(e)}), 409
 
     result["freed_h"] = human(result["bytes_freed"])
-    return jsonify({"ok": True, "result": result})
+    return jsonify({"ok": True, "result": result,
+                    "refresh": delete_refresh([result["drive_id"]])})
 
 
 @app.route("/api/drive/type", methods=["POST"])
@@ -894,7 +1001,9 @@ def api_move_targets():
     """
     exclude = request.args.get("exclude", "")
     nodes = selected_nodes()
-    connected = scanner.get_connected_drives(max_age=0)
+    # Offering a target that turns out not to be there wastes the move, so
+    # this waits for the network answer rather than serving the last one.
+    connected = scanner.get_connected_drives(max_age=0, wait_for_network=True)
     needs_library = any(n["root_type"] != "redundancy" for n in nodes) if nodes else True
 
     targets = []
@@ -924,7 +1033,9 @@ def api_copy_targets():
     out: a second copy there dies with the first, which is the failure this
     is meant to survive.
     """
-    connected = scanner.get_connected_drives()
+    # Same as the move targets: a backup offered to a drive that is not
+    # actually there is a wasted copy, so this waits for the network answer.
+    connected = scanner.get_connected_drives(max_age=0, wait_for_network=True)
     source = request.args.get("source", "")
     nodes = selected_nodes()
 
@@ -1182,11 +1293,13 @@ def api_nodes_delete():
     if not node_ids:
         return jsonify({"ok": False, "error": "Nothing selected."}), 400
 
-    results, freed = [], 0
+    results, freed, touched = [], 0, []
     for node_id in node_ids:
         try:
             r = fileops.delete_node(node_id, permanent=(mode == "permanent"))
             freed += r["bytes_freed"]
+            if r["drive_id"] not in touched:
+                touched.append(r["drive_id"])
             results.append({"node_id": node_id, "ok": True, "name": r["name"]})
         except fileops.FileOpError as e:
             results.append({"node_id": node_id, "ok": False, "error": str(e)})
@@ -1198,6 +1311,7 @@ def api_nodes_delete():
         "deleted": len(succeeded),
         "failed": len(results) - len(succeeded),
         "freed_h": human(freed),
+        "refresh": delete_refresh(touched),
     })
 
 

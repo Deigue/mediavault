@@ -237,6 +237,7 @@ def delete_node(node_id, permanent=False):
     return {
         "path": abs_path,
         "name": node["name"],
+        "drive_id": node["drive_id"],
         "was_dir": was_dir,
         "permanent": permanent,
         "nodes_removed": removed["nodes"],

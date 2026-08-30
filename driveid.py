@@ -118,6 +118,25 @@ def _fallback_fingerprint(drive_root, total_bytes):
     return "ro-" + hashlib.sha1(raw.encode("utf-8", "ignore")).hexdigest()[:16]
 
 
+def identify(drive_root, total_bytes):
+    """
+    This drive's id without creating anything: its marker file if it has one,
+    otherwise the same fingerprint get_drive_id falls back to.
+
+    The connected-drive probe needs this. Reading only the marker meant a
+    share that can never take one, such as another machine's system drive
+    mounted read only, was reported as unplugged no matter how healthy it was.
+    """
+    try:
+        with open(os.path.join(drive_root, MARKER_NAME), "r") as f:
+            existing = f.read().strip()
+        if existing:
+            return existing
+    except OSError:
+        pass
+    return _fallback_fingerprint(drive_root, total_bytes)
+
+
 def get_drive_id(drive_root, total_bytes):
     marker_path = os.path.join(drive_root, MARKER_NAME)
 

@@ -349,7 +349,6 @@ def plan_promote(node_id):
         "target_dir": target_dir,
         "target_path": target_path,
         "rel_path_after": os.path.relpath(target_path, mount),
-        "tags": db.get_tags_for_drive(node["drive_id"]).get(node["rel_path"], []),
     }
 
 
@@ -367,15 +366,25 @@ def promote_title(plan, log=None):
         raise MoveError(f"Could not promote '{plan['name']}': {e}")
     log(f"    now at {plan['rel_path_after']}")
 
-    for tag in plan["tags"]:
-        db.set_tag_bulk([(plan["drive_id"], plan["rel_path_after"])], tag, "add")
-    db.delete_node_subtree(plan["node_id"])
+    # Re-parented in the index rather than dropped from it, so the title shows
+    # up under its category straight away. Dropping it left nothing to render
+    # until the next full scan.
+    parent_id = db.promote_node_subtree(
+        plan["node_id"], plan["category"], plan["rel_path_after"])
+    if parent_id is None:
+        raise MoveError(
+            f"'{plan['name']}' was renamed on disk, but the index could not be "
+            f"updated. Rescan '{plan['drive_label']}' to pick it up."
+        )
 
     return {
         "name": plan["name"],
         "category": plan["category"],
         "size_bytes": plan["size_bytes"],
         "target_label": plan["drive_label"],
+        "node_id": plan["node_id"],
+        "drive_id": plan["drive_id"],
+        "rel_path": plan["rel_path_after"],
     }
 
 

@@ -698,6 +698,98 @@ def delete_node_subtree(node_id):
         conn.close()
 
 
+def _shift_ancestor_sizes(conn, parent_id, delta):
+    """Add delta to every ancestor's size. Folder sizes are recursive totals,
+    so a subtree that changes parents has to be taken off one chain and put
+    on the other."""
+    while parent_id is not None:
+        conn.execute("UPDATE nodes SET size_bytes = MAX(0, size_bytes + ?) WHERE id = ?",
+                     (delta, parent_id))
+        row = conn.execute("SELECT parent_id FROM nodes WHERE id = ?", (parent_id,)).fetchone()
+        parent_id = row["parent_id"] if row else None
+
+
+def promote_node_subtree(node_id, category_name, new_rel_path):
+    """
+    Move a promoted title from the backup tree into the library tree.
+
+    Re-parents rather than deleting and re-inserting, so the seasons and
+    files under it keep their rows and their sizes, and the page can show the
+    title in its new home without a rescan. Tags move with it, since they are
+    keyed by path. Returns the new parent's node id, or None if the drive has
+    no library root to move it into.
+    """
+    conn = get_conn()
+    try:
+        node = conn.execute("SELECT * FROM nodes WHERE id = ?", (node_id,)).fetchone()
+        if node is None:
+            return None
+
+        root = conn.execute(
+            "SELECT * FROM nodes WHERE drive_id = ? AND depth = 0 "
+            "AND root_type = 'library' ORDER BY id LIMIT 1",
+            (node["drive_id"],),
+        ).fetchone()
+        if root is None:
+            return None
+
+        category = conn.execute(
+            "SELECT * FROM nodes WHERE parent_id = ? AND depth = 1 AND name = ?",
+            (root["id"], category_name),
+        ).fetchone()
+        if category is None:
+            # promote_title creates the folder on disk when it is missing, so
+            # the index has to gain it too or the title would have no home.
+            cur = conn.execute(
+                "INSERT INTO nodes (drive_id, parent_id, name, rel_path, is_dir, "
+                "size_bytes, depth, root_type, search_name) "
+                "VALUES (?, ?, ?, ?, 1, 0, 1, 'library', ?)",
+                (node["drive_id"], root["id"], category_name,
+                 os.path.join(root["rel_path"], category_name),
+                 matching.title_key(category_name)),
+            )
+            category = conn.execute("SELECT * FROM nodes WHERE id = ?",
+                                    (cur.lastrowid,)).fetchone()
+
+        old_rel = node["rel_path"]
+        size = node["size_bytes"] or 0
+
+        _shift_ancestor_sizes(conn, node["parent_id"], -size)
+
+        conn.execute(
+            "UPDATE nodes SET parent_id = ?, rel_path = ?, root_type = 'library' "
+            "WHERE id = ?",
+            (category["id"], new_rel_path, node_id),
+        )
+        # Everything below it keeps its place under the title, so only the
+        # leading path changes. The +1 is SQLite's 1-based substr.
+        conn.execute(
+            "UPDATE nodes SET rel_path = ? || SUBSTR(rel_path, ?), "
+            "root_type = 'library' "
+            "WHERE drive_id = ? AND rel_path LIKE ? AND id != ?",
+            (new_rel_path, len(old_rel) + 1, node["drive_id"],
+             old_rel + os.sep + "%", node_id),
+        )
+        # Tags are keyed by path, so they follow the same rewrite.
+        conn.execute(
+            "UPDATE tags SET rel_path = ? WHERE drive_id = ? AND rel_path = ?",
+            (new_rel_path, node["drive_id"], old_rel),
+        )
+        conn.execute(
+            "UPDATE tags SET rel_path = ? || SUBSTR(rel_path, ?) "
+            "WHERE drive_id = ? AND rel_path LIKE ?",
+            (new_rel_path, len(old_rel) + 1, node["drive_id"],
+             old_rel + os.sep + "%"),
+        )
+
+        _shift_ancestor_sizes(conn, category["id"], size)
+
+        conn.commit()
+        return category["id"]
+    finally:
+        conn.close()
+
+
 def get_drive_id_for_node(node_id):
     """Used to validate that a lazy-load request targets a real node."""
     conn = get_conn()
@@ -1368,6 +1460,33 @@ def title_counts_by_category():
     for r in rows:
         out.setdefault(r["drive_id"], {})[r["category"]] = r["n"]
     return out
+
+
+def category_counts_for_drive(drive_id):
+    """
+    What each category folder on a drive holds, keyed by the folder's node id
+    so a header can be updated in place.
+
+    Counts every child, not just the library ones, because that is what the
+    header beside the folder name means: a category under a backup root
+    counts the copies in it. Left joined so a category emptied by a delete
+    comes back as zero rather than dropping out and leaving a stale number.
+    """
+    conn = get_conn()
+    rows = conn.execute(
+        """
+        SELECT parent.id AS node_id, parent.name AS category,
+               COUNT(child.id) AS n
+        FROM nodes parent
+        LEFT JOIN nodes child
+          ON child.parent_id = parent.id AND child.depth = 2
+        WHERE parent.drive_id = ? AND parent.depth = 1 AND parent.is_dir = 1
+        GROUP BY parent.id
+        """,
+        (drive_id,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 def get_tags_for_drive(drive_id):
