@@ -15,6 +15,7 @@ are picked up. Tags are keyed by path in a separate table and survive.
 
 import argparse
 import os
+import re
 import shutil
 import sys
 import threading
@@ -864,6 +865,59 @@ def deferred_network_roots():
     return out
 
 
+# Volume labels the cloud clients give their virtual drives. Every word has to
+# appear, so "Google Drive" hits and "GDRIVE-BACKUP" does not.
+#
+# Bare "mega" and "box" are deliberately absent. Neither client mounts a drive
+# letter of its own, so listing them would buy nothing while matching a real
+# disk labelled "MEGA 4TB" or "BOX 2".
+CLOUD_DRIVE_LABELS = (
+    "google drive", "my drive", "pcloud", "pclouddrive", "dropbox", "onedrive",
+    "megasync", "box drive", "filen", "icloud", "nextcloud", "owncloud",
+    "tresorit", "koofr", "jottacloud", "sync.com",
+)
+
+
+def _volume_info(root):
+    """(label, filesystem name) for a mounted root, or ('', '')."""
+    if os.name != "nt":
+        return "", ""
+    try:
+        import ctypes
+        label = ctypes.create_unicode_buffer(261)
+        fs = ctypes.create_unicode_buffer(261)
+        ctypes.windll.kernel32.GetVolumeInformationW(
+            root, label, 260, None, None, None, fs, 260)
+        return label.value, fs.value
+    except Exception:
+        return "", ""
+
+
+def is_cloud_drive(root):
+    """
+    Is this drive letter a cloud client's virtual drive?
+
+    Two signals, either of which is enough. The label is what the clients
+    write there, and matching it whole-word keeps a real disk named after a
+    provider out of it. FAT32 on a fixed disk is the structural one: Windows
+    will not format a fixed volume over 32 GB that way, so in practice only
+    an emulated filesystem reports it, which is what Google Drive and pCloud
+    both do. A removable FAT32 stick is left alone, since that is normal.
+
+    Only virtual drives are caught. A mirrored folder such as D:\\Google Drive
+    is on an ordinary disk that MediaVault has every reason to index, and the
+    folder itself never sits at the top level where a library root is looked
+    for.
+    """
+    label, filesystem = _volume_info(root)
+    words = set(re.findall(r"[a-z0-9.]+", label.lower()))
+    for name in CLOUD_DRIVE_LABELS:
+        parts = name.split()
+        if all(p in words for p in parts):
+            return True
+    return filesystem.upper() == "FAT32" and get_drive_type(root) == DRIVE_FIXED
+
+
 def find_setup_candidates(include_network=True):
     """
     Connected drives that do not have the folder layout yet, for the setup
@@ -894,6 +948,14 @@ def find_setup_candidates(include_network=True):
         return {
             "has_library": has_library_folders(root),
             "name": driveid.get_drive_name(root),
+            # Both asked here rather than in the filter above, because reading
+            # a volume label or a bus type can block on a share whose far end
+            # has gone, and this runs on the probe thread with a deadline.
+            "cloud": is_cloud_drive(root),
+            # Not DRIVE_REMOVABLE, which Windows reserves for devices whose
+            # medium comes out, so a USB hard disk reports fixed and read as
+            # not removable here while the rest of the app called it external.
+            "external": is_external(root),
         }
 
     described = probe_roots(types, describe)
@@ -905,6 +967,12 @@ def find_setup_candidates(include_network=True):
         # cannot be read would only fail later.
         if info is None or info["has_library"]:
             continue
+        # A cloud client's virtual drive. Its contents live on someone else's
+        # computer, its free space is a quota rather than a disk, and writing
+        # into it queues an upload. Whatever it mirrors locally is already
+        # counted against the real drive holding the mirror.
+        if info["cloud"]:
+            continue
 
         drive_id = by_root.get(root)
         # Letter and name stay apart so the UI can column them.
@@ -914,7 +982,7 @@ def find_setup_candidates(include_network=True):
             "letter": drive_letter_for(root) or root,
             "name": info["name"] or "(no volume label)",
             "known": drive_id in known if drive_id else False,
-            "removable": drive_type == DRIVE_REMOVABLE,
+            "removable": info["external"],
         })
     return candidates
 

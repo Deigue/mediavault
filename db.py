@@ -13,6 +13,7 @@ import urllib.request
 from datetime import datetime, timezone
 
 import matching
+import tagging
 
 DEFAULT_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mediavault.db")
 
@@ -966,6 +967,10 @@ def get_duplicate_map():
     Titles that appear in more than one place, by matching name at depth 2.
     Returns {node_id: [other copies]}.
 
+    Single-file titles count too. Leaving them out meant a film kept as one
+    .mkv showed no shield however many copies of it existed, while the rest
+    of the app could see them perfectly well.
+
     Worked out fresh each call rather than stored, so a deleted copy drops
     out on the next scan with no cleanup step.
     """
@@ -976,7 +981,7 @@ def get_duplicate_map():
                nodes.size_bytes, drives.label as drive_label,
                drives.last_letter as drive_letter_last
         FROM nodes JOIN drives ON nodes.drive_id = drives.drive_id
-        WHERE nodes.is_dir = 1 AND nodes.depth = 2
+        WHERE nodes.depth = 2
         """
     ).fetchall()
     conn.close()
@@ -1090,16 +1095,26 @@ def redundancy_summaries():
     roots = {r["drive_id"] for r in conn.execute(
         "SELECT DISTINCT drive_id FROM nodes "
         "WHERE root_type = 'redundancy' AND depth = 0")}
+    # Grouped by category as well, since what a drive holds is weighted by
+    # kind: losing a drive full of shows costs more than one full of anime.
     rows = conn.execute(
-        "SELECT drive_id, COUNT(*) AS titles, COALESCE(SUM(size_bytes), 0) AS bytes "
-        "FROM nodes WHERE root_type = 'redundancy' AND depth = 2 "
-        "GROUP BY drive_id").fetchall()
+        "SELECT n.drive_id, p.name AS category, COUNT(*) AS titles, "
+        "       COALESCE(SUM(n.size_bytes), 0) AS bytes "
+        "FROM nodes n JOIN nodes p ON n.parent_id = p.id "
+        "WHERE n.root_type = 'redundancy' AND n.depth = 2 "
+        "GROUP BY n.drive_id, p.name").fetchall()
     conn.close()
 
-    out = {d: {"has_root": True, "titles": 0, "size_bytes": 0} for d in roots}
+    def blank(has_root):
+        return {"has_root": has_root, "titles": 0, "size_bytes": 0,
+                "buckets": {k: 0 for k in tagging.WEIGHT_BUCKET_KEYS}}
+
+    out = {d: blank(True) for d in roots}
     for r in rows:
-        out.setdefault(r["drive_id"], {"has_root": False})
-        out[r["drive_id"]].update(titles=r["titles"], size_bytes=r["bytes"])
+        entry = out.setdefault(r["drive_id"], blank(False))
+        entry["titles"] += r["titles"]
+        entry["size_bytes"] += r["bytes"]
+        entry["buckets"][tagging.weight_bucket_for_category(r["category"])] += r["titles"]
     return out
 
 
@@ -1126,6 +1141,208 @@ def indexed_bytes_by_drive():
         key = "redundancy" if r["root_type"] == "redundancy" else "library"
         bands[key] += r["bytes"]
     return out
+
+
+def title_keys_on_drive(drive_id):
+    """
+    Every title already on a drive, keyed by normalised name.
+
+    Matched the way duplicates are, so a differently named copy of the same
+    show still counts. Used to keep a second copy off a drive that has one,
+    since two copies on one disk protect nothing.
+    """
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT name, rel_path, root_type FROM nodes WHERE drive_id = ? AND depth = 2",
+        (drive_id,),
+    ).fetchall()
+    conn.close()
+
+    out = {}
+    for r in rows:
+        key = matching.title_key(r["name"]) or r["name"].strip().lower()
+        out.setdefault(key, []).append(
+            {"rel_path": r["rel_path"], "root_type": r["root_type"]})
+    return out
+
+
+# Below this share of a drive's top-level library folders looking like real
+# categories, the drive is laid out flat rather than merely having one odd
+# folder name.
+CATEGORY_SHARE_MIN = 0.5
+
+
+def flat_layout_drives():
+    """
+    Drives whose library folder holds shows directly instead of categories.
+
+    On such a drive every figure that depends on the convention is wrong:
+    what MediaVault calls a title is really one season or episode, and what
+    it calls a category is really the show. Detected by how few of the
+    top-level folders look like a category at all, so one unusual name does
+    not condemn a drive that is otherwise laid out properly.
+    """
+    conn = get_conn()
+    rows = conn.execute(
+        """
+        SELECT nodes.drive_id, nodes.name, drives.label AS drive_label
+        FROM nodes JOIN drives ON nodes.drive_id = drives.drive_id
+        WHERE nodes.depth = 1 AND nodes.root_type = 'library' AND nodes.is_dir = 1
+        """
+    ).fetchall()
+    conn.close()
+
+    by_drive = {}
+    for r in rows:
+        entry = by_drive.setdefault(
+            r["drive_id"], {"drive_id": r["drive_id"], "label": r["drive_label"],
+                            "known": 0, "unknown": [], "total": 0})
+        entry["total"] += 1
+        if tagging.weight_bucket_for_category(r["name"]) == "other":
+            entry["unknown"].append(r["name"])
+        else:
+            entry["known"] += 1
+
+    return [e for e in by_drive.values()
+            if e["total"] and e["known"] / e["total"] < CATEGORY_SHARE_MIN]
+
+
+def library_sizes_by_weight_bucket(exclude_drive_ids=()):
+    """
+    Every library title's size, grouped by weight bucket.
+
+    Feeds the Settings button that seeds the weights from your own library
+    rather than from a guess about what a show or a film usually weighs.
+    Drives laid out flat are excluded by the caller: their "titles" are
+    episodes, and averaging those in would drag every median down.
+    """
+    conn = get_conn()
+    rows = conn.execute(
+        """
+        SELECT nodes.size_bytes, nodes.drive_id, parent.name AS category
+        FROM nodes JOIN nodes AS parent ON nodes.parent_id = parent.id
+        WHERE nodes.depth = 2 AND nodes.root_type = 'library'
+        """
+    ).fetchall()
+    conn.close()
+
+    skip = set(exclude_drive_ids)
+    out = {k: [] for k in tagging.WEIGHT_BUCKET_KEYS}
+    for r in rows:
+        if r["drive_id"] in skip:
+            continue
+        out[tagging.weight_bucket_for_category(r["category"])].append(r["size_bytes"] or 0)
+    return out
+
+
+def copies_by_title_key():
+    """
+    Every copy of every title, grouped by normalised name.
+
+    Covers single-file titles, which the duplicate map does not, so it is the
+    honest answer to "how many copies of this are there, and which of them
+    are backups".
+    """
+    conn = get_conn()
+    rows = conn.execute(
+        """
+        SELECT nodes.id, nodes.name, nodes.rel_path, nodes.root_type,
+               nodes.drive_id, drives.label AS drive_label
+        FROM nodes JOIN drives ON nodes.drive_id = drives.drive_id
+        WHERE nodes.depth = 2
+        """
+    ).fetchall()
+    conn.close()
+
+    out = {}
+    for r in rows:
+        key = matching.title_key(r["name"]) or r["name"].strip().lower()
+        out.setdefault(key, []).append(dict(r))
+    return out
+
+
+def library_title_keys():
+    """
+    Normalised names of every library title, on any drive.
+
+    Covers single-file titles as well as folders, which the duplicate map
+    deliberately does not, so it is the honest test of whether a backup still
+    has an original somewhere.
+    """
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT name FROM nodes WHERE depth = 2 AND root_type = 'library'"
+    ).fetchall()
+    conn.close()
+    return {matching.title_key(r["name"]) or r["name"].strip().lower() for r in rows}
+
+
+def library_copies_of(name, exclude_node_id=None):
+    """
+    Every library copy of a title, anywhere, matched on the normalised name.
+
+    A backup with none left is an orphan: the copy is the only one there is,
+    and it is no longer a copy of anything.
+    """
+    conn = get_conn()
+    rows = conn.execute(
+        """
+        SELECT nodes.id, nodes.rel_path, nodes.drive_id, drives.label AS drive_label
+        FROM nodes JOIN drives ON nodes.drive_id = drives.drive_id
+        WHERE nodes.depth = 2 AND nodes.root_type = 'library'
+        """
+    ).fetchall()
+    conn.close()
+
+    want = matching.title_key(name) or name.strip().lower()
+    out = []
+    for r in rows:
+        if exclude_node_id is not None and r["id"] == exclude_node_id:
+            continue
+        key = matching.title_key(r["rel_path"].rsplit(os.sep, 1)[-1])
+        if (key or "") == want:
+            out.append(dict(r))
+    return out
+
+
+def same_drive_duplicates():
+    """
+    Titles held as both a library copy and a backup on one drive.
+
+    That protects nothing, since the drive failing takes both, and it wastes
+    the space of the second copy. MediaVault refuses to create it, so any
+    that turn up came in on a drive that already had them.
+    """
+    conn = get_conn()
+    rows = conn.execute(
+        """
+        SELECT nodes.name, nodes.rel_path, nodes.root_type, nodes.size_bytes,
+               nodes.drive_id, drives.label AS drive_label
+        FROM nodes JOIN drives ON nodes.drive_id = drives.drive_id
+        WHERE nodes.depth = 2
+        """
+    ).fetchall()
+    conn.close()
+
+    groups = {}
+    for r in rows:
+        key = matching.title_key(r["name"]) or r["name"].strip().lower()
+        groups.setdefault((r["drive_id"], key), []).append(dict(r))
+
+    out = []
+    for copies in groups.values():
+        if len({c["root_type"] for c in copies}) < 2:
+            continue
+        backups = [c for c in copies if c["root_type"] == "redundancy"]
+        out.append({
+            "drive_id": copies[0]["drive_id"],
+            "drive_label": copies[0]["drive_label"],
+            "name": copies[0]["name"],
+            "paths": [c["rel_path"] for c in copies],
+            # Deleting the backup side is what reclaims the space.
+            "wasted_bytes": sum(c["size_bytes"] or 0 for c in backups),
+        })
+    return sorted(out, key=lambda e: -e["wasted_bytes"])
 
 
 def title_counts_by_category():

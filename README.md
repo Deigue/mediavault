@@ -21,7 +21,8 @@ and again whenever you add, move or delete files.
 
 ## What the dashboard does
 
-- **Scan** known drives, plus any connected drive with a library folder.
+- **Scan** known drives, plus any connected drive with a library folder. A
+  cloud client's virtual drive is skipped, since its space is a quota.
 - **Set up** a drive that has no library folder yet.
 - **Explore** files even while the drive is unplugged.
 - **Open** folders in your file manager and files in their usual app.
@@ -48,11 +49,17 @@ The **Suggestions** button proposes what is worth moving or copying. Nothing
 happens until you tick something, and ticking several destinations queues
 them to run one after another.
 
-| Kind      | Why it appears                                |
-| --------- | --------------------------------------------- |
-| `relief`  | A drive is past the free space it should keep |
-| `protect` | A starred title exists in only one place      |
-| `reclaim` | An SSD is holding bulk media                  |
+| Kind      | Why it appears                                    |
+| --------- | ------------------------------------------------- |
+| `orphan`  | A backup whose original has gone, so it is the only copy |
+| `relief`  | A drive is past the free space it should keep     |
+| `protect` | A starred title exists in only one place          |
+| `reclaim` | An SSD is holding bulk media                      |
+| `spread`  | One drive holds too much of all your protection   |
+
+Relief sheds backups as well as titles, since the original survives the move.
+Where nothing left can move, it offers to delete backups instead, never the
+only copy of anything. See the `suggestions.py` docstring for the rules.
 
 Titles added in the last 21 days are left alone, and anything tagged
 **Watching** is never proposed for a move.

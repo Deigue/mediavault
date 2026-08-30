@@ -18,6 +18,7 @@ from flask import Flask, g, has_request_context, render_template, request, jsoni
 import backup
 import config
 import db
+import matching
 import drivetypes
 import fileops
 import moveops
@@ -272,28 +273,41 @@ def backup_state(duplicates, tags):
     return state
 
 
-def annotate_tree(nodes, drive_total_bytes, drive_id, tags_by_path, dup_map, hints):
+def annotate_tree(nodes, drive_total_bytes, drive_id, tags_by_path, dup_map, hints,
+                  connected=True, library_keys=frozenset()):
     """Adds display fields recursively: size_h, pct_of_drive, tags, duplicate
     info, layout hints."""
     for n in nodes:
         n["size_h"] = human(n["size_bytes"])
         n["pct_of_drive"] = round(100 * n["size_bytes"] / drive_total_bytes, 2) if drive_total_bytes else 0
         n["drive_id"] = drive_id
+        # Moving and backing up both read the files, so both are dead while
+        # the drive is unplugged, however much of its tree is still shown.
+        n["drive_connected"] = connected
         # Tags, duplicates and hints all apply at title level.
         if n["depth"] == 2:
             n["tags"] = tags_by_path.get(n["rel_path"], [])
-            n["duplicates"] = dup_map.get(n["id"], []) if n["is_dir"] else []
+            n["duplicates"] = dup_map.get(n["id"], [])
             n["backup_state"] = backup_state(n["duplicates"], n["tags"])
             # The unpromoted state too, so removing partial-ok can put the
             # amber shield back without a reload.
             n["backup_real"] = raw_backup_state(n["duplicates"])
             n["hints"] = hints.get(n["id"], [])
             n["hint_detail"] = structure.describe(n["hints"])
+            # A backup with no library copy left anywhere is no longer a copy
+            # of anything, and is the only thing Promote acts on. Not read off
+            # the duplicate map, which covers folders only, so a single-file
+            # title would have read as an orphan while its original sat there.
+            key = matching.title_key(n["name"]) or n["name"].strip().lower()
+            n["is_orphan_backup"] = (
+                n["root_type"] == "redundancy" and key not in library_keys
+            )
         else:
             n["tags"] = []
             n["duplicates"] = []
             n["backup_state"] = None
             n["backup_real"] = None
+            n["is_orphan_backup"] = False
             n["hints"] = []
             n["hint_detail"] = ""
         # A category folder says how many titles it holds. The children are
@@ -305,7 +319,7 @@ def annotate_tree(nodes, drive_total_bytes, drive_id, tags_by_path, dup_map, hin
         else:
             n["title_count"] = None
         annotate_tree(n["children"], drive_total_bytes, drive_id, tags_by_path,
-                      dup_map, hints)
+                      dup_map, hints, connected, library_keys)
 
 
 @app.route("/api/children")
@@ -341,6 +355,8 @@ def home():
     hint_conn = db.get_conn()
     counts_by_drive = db.title_counts_by_category()
     media_by_drive = db.indexed_bytes_by_drive()
+    # Worked out once: every title's promote state is a lookup against it.
+    library_keys = db.library_title_keys()
 
     for d in drives:
         # Where this drive is right now, rather than where it was last scanned.
@@ -371,7 +387,16 @@ def home():
         # Drives the border and the free figure. A drive with no capacity
         # figures has nothing to judge, so it stays neutral rather than
         # reading as critically full on a free percentage of zero.
-        d["space_state"] = space["severity"] if d["total_bytes"] else "unknown"
+        # Cold storage is kept full on purpose and its warnings are off, so
+        # it stays neutral however little is left. evaluate() still calls it
+        # critical below the 3% threshold, which is right for the message in
+        # the card but wrong for a border that means "this needs attention".
+        if not d["total_bytes"]:
+            d["space_state"] = "unknown"
+        elif d["cold_storage"] and d["allows_cold"]:
+            d["space_state"] = "cold"
+        else:
+            d["space_state"] = space["severity"]
         d["total_h"] = human(total)
         d["used_h"] = human(used)
         d["free_h"] = human(free)
@@ -402,7 +427,8 @@ def home():
         tags_by_path = db.get_tags_for_drive(d["drive_id"])
         hints = structure.hints_for_drive(d["drive_id"], hint_conn)
         tree = db.get_tree_for_drive(d["drive_id"])
-        annotate_tree(tree, total, d["drive_id"], tags_by_path, dup_map, hints)
+        annotate_tree(tree, total, d["drive_id"], tags_by_path, dup_map, hints,
+                      d["connected"], library_keys)
         d["tree"] = tree
         d["hint_count"] = len(hints)
         d["counts"] = summarise_counts(counts_by_drive.get(d["drive_id"]))
@@ -422,6 +448,8 @@ def home():
     grand_free = sum(d["free_bytes"] or 0 for d in drives)
 
     low_space_drives = [d for d in drives if d["low_space"]]
+    same_drive_dups = db.same_drive_duplicates()
+    flat_drives = db.flat_layout_drives()
     all_tags = db.get_all_distinct_tags()
 
     stats = {
@@ -453,6 +481,9 @@ def home():
         stats=stats,
         library=library,
         low_space_drives=low_space_drives,
+        same_drive_dups=same_drive_dups,
+        flat_drives=flat_drives,
+        same_drive_dup_h=human(sum(e["wasted_bytes"] for e in same_drive_dups)),
         all_tags=all_tags,
         system_tags=tagging.SYSTEM_TAGS,
         known_tags=tagging.KNOWN_TAGS,
@@ -482,6 +513,35 @@ def search():
         # a show is instantly distinguishable from one of its episodes.
         r["is_title"] = r["depth"] == 2
     return jsonify({"results": results})
+
+
+@app.route("/api/promote", methods=["POST"])
+def api_promote():
+    """
+    Turn an orphaned backup into a library title on its own drive.
+
+    A rename within one drive, so it finishes at once and needs no job or
+    progress panel, unlike a move between drives.
+    """
+    data = request.get_json(force=True)
+    node_id = data.get("node_id")
+    if not node_id:
+        return jsonify({"ok": False, "error": "node_id is required"}), 400
+
+    try:
+        plan = moveops.plan_promote(int(node_id))
+        if not data.get("confirm"):
+            return jsonify({"ok": True, "planned": True, "plan": {
+                "name": plan["name"], "category": plan["category"],
+                "drive_label": plan["drive_label"],
+                "size_h": human(plan["size_bytes"]),
+                "from_rel": plan["source_rel"], "to_rel": plan["rel_path_after"],
+            }})
+        result = moveops.promote_title(plan)
+    except moveops.MoveError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+    return jsonify({"ok": True, "promoted": result})
 
 
 @app.route("/api/tag", methods=["POST"])
@@ -615,6 +675,49 @@ def api_node_open():
     return jsonify({"ok": True, "path": path})
 
 
+@app.route("/api/suggestions/sacrifice", methods=["POST"])
+def api_sacrifice():
+    """
+    Delete one backup permanently, to free space on a drive that nothing can
+    be moved off.
+
+    Every condition is re-checked here rather than trusted from the page: the
+    node must still be a backup, and an original must still exist somewhere
+    else. The Recycle Bin is not offered, because a recycled file still
+    occupies the space this exists to reclaim.
+    """
+    data = request.get_json(force=True)
+    try:
+        node_id = int(data.get("node_id"))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "node_id must be an integer"}), 400
+    if not data.get("confirm"):
+        return jsonify({"ok": False, "error": "confirm is required"}), 400
+
+    node = db.get_node(node_id)
+    if node is None:
+        return jsonify({"ok": False,
+                        "error": "That title is no longer in the database. "
+                                 "Rescan and try again."}), 400
+    if node["depth"] != 2 or node["root_type"] != "redundancy":
+        return jsonify({"ok": False,
+                        "error": f"'{node['name']}' is not a backup, so it is "
+                                 f"not something to delete for space."}), 400
+    if not db.library_copies_of(node["name"], exclude_node_id=node_id):
+        return jsonify({"ok": False,
+                        "error": f"'{node['name']}' has no original left "
+                                 f"anywhere, so this copy is the only one "
+                                 f"there is. Promote it instead."}), 400
+
+    try:
+        result = fileops.delete_node(node_id, permanent=True)
+    except fileops.FileOpError as e:
+        return jsonify({"ok": False, "error": str(e)}), 409
+
+    result["freed_h"] = human(result["bytes_freed"])
+    return jsonify({"ok": True, "result": result})
+
+
 @app.route("/api/node/delete", methods=["POST"])
 def api_node_delete():
     """Delete the file or folder behind a node. mode is 'bin', recoverable
@@ -741,42 +844,99 @@ def api_suggestions():
     return jsonify({"ok": True, **result})
 
 
+def selected_nodes(arg="nodes"):
+    """The titles a target list is being built for, skipping any that have
+    since left the index."""
+    ids = [i for i in request.args.get(arg, "").split(",") if i.strip().isdigit()]
+    return [n for n in (db.get_node(int(i)) for i in ids) if n]
+
+
+def annotate_conflicts(target, drive_id, nodes):
+    """
+    Which of these titles the drive already holds, as the original or as a
+    backup. They are skipped rather than blocking the whole drive, so one
+    clash in a selection of ten does not rule the drive out for the other
+    nine. A drive that holds every one of them is dropped by the caller.
+    """
+    keys = db.title_keys_on_drive(drive_id)
+    clashing = [n["name"] for n in nodes if moveops.existing_copy_on(drive_id, n, keys)]
+    target["conflicts"] = len(clashing)
+    target["conflict_names"] = clashing[:6]
+    target["movable"] = len(nodes) - len(clashing)
+    return target
+
+
+@app.route("/api/drives/state")
+def api_drive_state():
+    """
+    Which drives are plugged in right now.
+
+    The page is rendered once, so without this a drive plugged in afterwards
+    keeps its greyed out buttons until a reload. Deliberately tiny: the tree
+    does not change, only whether the drive behind it can be read.
+    """
+    connected = scanner.get_connected_drives()
+    return jsonify({"ok": True, "drives": {
+        d["drive_id"]: {
+            "connected": d["drive_id"] in connected,
+            "letter": drive_letter(connected.get(d["drive_id"]), d.get("last_letter")),
+        }
+        for d in db.get_all_drives()
+    }})
+
+
 @app.route("/api/move/targets")
 def api_move_targets():
-    """Drives a selection could move to: connected, with a library folder,
-    and not the one the titles are already on."""
+    """
+    Drives a selection could move to: connected, and not already holding the
+    titles. A library title needs the target to have a library folder; a
+    backup lands in its redundancy folder, which is created if missing.
+    """
     exclude = request.args.get("exclude", "")
+    nodes = selected_nodes()
     connected = scanner.get_connected_drives(max_age=0)
+    needs_library = any(n["root_type"] != "redundancy" for n in nodes) if nodes else True
 
     targets = []
     for d in db.get_all_drives():
         if d["drive_id"] == exclude:
             continue
         mount = connected.get(d["drive_id"])
-        if mount is None or moveops.find_library_root(mount) is None:
+        if mount is None or scanner.is_cloud_drive(mount):
             continue
-        targets.append(describe_target(d, mount, exclude))
+        if needs_library and moveops.find_library_root(mount) is None:
+            continue
+        target = annotate_conflicts(describe_target(d, mount, exclude), d["drive_id"], nodes)
+        if nodes and not target["movable"]:
+            continue
+        targets.append(target)
     return jsonify({"ok": True, "targets": targets})
 
 
 @app.route("/api/copy/targets")
 def api_copy_targets():
     """
-    Drives a backup could go to: any connected one except the source.
+    Drives a backup could go to: any connected one that does not already hold
+    a copy.
 
     The redundancy folder is created if missing, so a drive does not need one
-    already. The source is excluded because a copy beside the original dies
-    with it, which is the failure this is meant to survive.
+    already. A drive holding the original, or a backup of its own, is left
+    out: a second copy there dies with the first, which is the failure this
+    is meant to survive.
     """
     connected = scanner.get_connected_drives()
     source = request.args.get("source", "")
+    nodes = selected_nodes()
 
     targets = []
     for d in db.get_all_drives():
         mount = connected.get(d["drive_id"])
-        if mount is None or d["drive_id"] == source:
+        if mount is None or d["drive_id"] == source or scanner.is_cloud_drive(mount):
             continue
-        targets.append(describe_target(d, mount, source))
+        target = annotate_conflicts(describe_target(d, mount, source), d["drive_id"], nodes)
+        if nodes and not target["movable"]:
+            continue
+        targets.append(target)
     return jsonify({"ok": True, "targets": targets})
 
 
@@ -829,12 +989,32 @@ def api_settings():
         "effective_path": path,
         "note": note,
         "config_path": config.CONFIG_PATH,
+        "default_weights": config.DEFAULTS["backup_weights"],
         "db_path": db.db_path(),
         "db_path_warning": config.db_path_warning(db.db_path()),
         "db_env_override": bool(os.environ.get("MEDIAVAULT_DB")),
         # So the panel can say up front whether Backup can do anything,
         # rather than the button failing when pressed.
         "rclone_path": backup.rclone_path(),
+    })
+
+
+@app.route("/api/settings/weights/suggest")
+def api_weights_suggest():
+    """
+    Weights worked out from the median size of a title in each bucket.
+
+    A starting point rather than an answer: size stands in for what losing
+    something costs, and it is wrong wherever a category happens to be small.
+    """
+    flat = db.flat_layout_drives()
+    buckets = suggestions.weights_from_sizes()
+    return jsonify({
+        "ok": bool(buckets),
+        "error": "" if buckets else "Nothing indexed yet. Scan a drive first.",
+        "buckets": {k: {**v, "median_h": human(v["median_bytes"])}
+                    for k, v in buckets.items()},
+        "excluded_drives": [d["label"] for d in flat],
     })
 
 
@@ -860,6 +1040,20 @@ def api_settings_save():
         # Not validated here: that is a network round trip per save, and
         # rclone reports a bad target clearly enough when it runs.
         settings["backup_target"] = (data["backup_target"] or "").strip()
+    if isinstance(data.get("backup_weights"), dict):
+        weights = dict(settings["backup_weights"])
+        for key, value in data["backup_weights"].items():
+            if key not in weights:
+                continue
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                return jsonify({"ok": False,
+                                "error": f"'{value}' is not a number."}), 400
+            # Zero would let a whole category pile onto one drive unnoticed,
+            # so the floor is a small positive weight rather than nothing.
+            weights[key] = max(0.1, round(number, 2))
+        settings["backup_weights"] = weights
 
     outcome = {"db_moved_to": None, "db_adopted": None, "db_replaced": None}
     if "db_path" in data:

@@ -123,9 +123,11 @@ def hints_for_drive(drive_id, conn):
     Two queries rather than one per title: titles at depth 2, then every
     depth-3 row at once, grouped by parent.
     """
+    # Backups included: a copy of a badly laid out title is laid out just as
+    # badly, and it is the copy that gets promoted when the original goes.
     titles = conn.execute(
         "SELECT id, rel_path FROM nodes "
-        "WHERE drive_id = ? AND depth = 2 AND is_dir = 1 AND root_type = 'library'",
+        "WHERE drive_id = ? AND depth = 2 AND is_dir = 1",
         (drive_id,),
     ).fetchall()
     if not titles:

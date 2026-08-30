@@ -79,6 +79,36 @@ CATEGORY_BUCKETS = [
 SINGULAR = {"shows": "show", "movies": "movie", "anime": "anime", "other": "other"}
 
 
+# A second classification, for how much losing one title would hurt. Kept
+# apart from CATEGORY_BUCKETS on purpose: those are the counters on the page
+# and moving titles between them would change figures nobody asked to change.
+# Here anime films are their own bucket rather than movies, because what a
+# backup of one is worth has nothing to do with how the sites file them.
+#
+# Order matters, first match wins, so anime films are tested before movies.
+WEIGHT_BUCKETS = [
+    ("anime_movies", "anime films",
+     lambda n: "anime" in n and ("movie" in n or "film" in n)),
+    ("tv", "shows", lambda n: "tv" in n or "show" in n or "series" in n),
+    ("movies", "movies", lambda n: "movie" in n or "film" in n),
+    ("anime", "anime", lambda n: "anime" in n),
+    ("other", "other", lambda _n: True),
+]
+
+WEIGHT_BUCKET_KEYS = [key for key, _label, _match in WEIGHT_BUCKETS]
+
+WEIGHT_BUCKET_LABELS = {key: label for key, label, _match in WEIGHT_BUCKETS}
+
+
+def weight_bucket_for_category(category_name):
+    """Which weight bucket a category folder falls in. Returns the key."""
+    name = (category_name or "").lower()
+    for key, _label, matches in WEIGHT_BUCKETS:
+        if matches(name):
+            return key
+    return "other"
+
+
 def bucket_for_category(category_name):
     """Which counter a category folder belongs to. Returns (key, label)."""
     name = (category_name or "").lower()

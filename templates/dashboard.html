@@ -434,6 +434,7 @@
     border:1px solid var(--line); color:var(--text-faint);
   }
   .mv-flag.tag-ext{ color:#FCD34D; border-color:rgba(252,211,77,0.35); }
+  .mv-flag.tag-skip{ color:var(--warn); border-color:rgba(242,166,90,0.4); }
   .mv-flag.tag-red{ color:#4ADE80; border-color:rgba(74,222,128,0.35); }
   .mv-flag.tag-type{ color:var(--text-faint); }
   .mv-target:hover{ background:rgba(255,255,255,0.03); }
@@ -523,12 +524,91 @@
 
   /* ---- suggestions ---- */
   #suggest-backdrop .modal{ max-width:min(1000px, 100%); }
+  .set-divider{ height:1px; background:var(--line); margin:20px 0 4px; }
+
+  /* Highest first, so the column reads as the order the engine works in. */
+  .set-weights{ display:flex; flex-direction:column; gap:6px; margin-top:11px; }
+  .set-weight{
+    display:grid; grid-template-columns:1fr auto; gap:10px; align-items:center;
+    font-size:13px; color:var(--text-dim);
+  }
+  /* A stepper rather than the native spinner, whose arrows are tiny, sit on
+     top of the digits, and only appear on hover. */
+  .set-stepper{
+    display:flex; align-items:center; background:var(--panel-raised);
+    border:1px solid var(--line); border-radius:8px; overflow:hidden;
+  }
+  .set-stepper:focus-within{ border-color:var(--accent-dim); }
+  .set-step{
+    width:28px; height:30px; flex:none; border:none; background:none; cursor:pointer;
+    color:var(--text-dim); font-size:15px; line-height:1; padding:0;
+  }
+  .set-step:hover{ background:rgba(255,255,255,0.06); color:var(--text); }
+  .set-step:focus-visible{ outline:2px solid var(--accent); outline-offset:-2px; }
+  /* Two class names deliberately: .bulk-input sets a fixed 180px further down
+     the sheet, which at equal specificity would win on source order and push
+     the modal into a horizontal scroll. */
+  .set-weight .set-weight-input{
+    width:52px; min-width:0; flex:none;
+    background:none; border:none; border-radius:0; padding:6px 0;
+    font-family:'IBM Plex Mono','Cascadia Mono',Consolas,monospace;
+    font-size:13px; text-align:center; color:var(--text);
+  }
+  .set-weight .set-weight-input:focus{ outline:none; }
+  /* The native arrows, gone in every engine. */
+  .set-weight-input::-webkit-outer-spin-button,
+  .set-weight-input::-webkit-inner-spin-button{ -webkit-appearance:none; margin:0; }
+  .set-weight-input[type=number]{ -moz-appearance:textfield; appearance:textfield; }
+  .set-weight-actions{ display:flex; gap:8px; margin-top:12px; flex-wrap:wrap; }
+
   .sugg-intro{ font-size:12.5px; color:var(--text-dim); line-height:1.6; margin-bottom:10px; }
   .sugg-recent{ margin-bottom:14px; font-size:12px; }
+  /* Shares the row with the recent toggle rather than taking one of its own,
+     and only its visibility changes, so ticking shifts nothing. */
+  .sugg-recent-row{
+    display:flex; align-items:center; justify-content:space-between;
+    gap:12px; margin-bottom:14px;
+  }
+  .sugg-recent-row .sugg-recent{ margin-bottom:0; }
+  .sugg-clear{
+    display:inline-flex; align-items:center; justify-content:center;
+    height:26px; padding:0 12px; font-size:12px; line-height:1; flex:none;
+  }
   .sugg-body{ display:flex; flex-direction:column; gap:14px; margin-bottom:16px; }
 
+  /* One collapsed row per reason. Closed, the summary alone says how much
+     each reason is offering, so the whole set fits without scrolling. */
+  .sugg-section{ border:1px solid var(--line); border-radius:9px; overflow:hidden; }
+  .sugg-section-head .sugg-badge{
+    min-width:66px; text-align:center; margin-right:0; flex:none;
+  }
+  .sugg-section-head{
+    display:flex; align-items:center; gap:9px; padding:11px 13px; cursor:pointer;
+    background:rgba(255,255,255,0.02); list-style:none; user-select:none;
+  }
+  .sugg-section-head::-webkit-details-marker{ display:none; }
+  .sugg-section-head:hover{ background:rgba(255,255,255,0.045); }
+  .sugg-section-head:focus-visible{ outline:2px solid var(--accent); outline-offset:-2px; }
+  .sugg-section-count{
+    font-family:'IBM Plex Mono','Cascadia Mono',Consolas,monospace; font-size:11.5px;
+    color:var(--text-dim); margin-left:auto; white-space:nowrap;
+  }
+  .sugg-section-caret{ font-size:10px; color:var(--text-faint); transition:transform .15s; }
+  .sugg-section[open] .sugg-section-caret{ transform:rotate(180deg); }
+  /* Inside a section the per-drive groups are plain bands, since the section
+     already carries the border. */
+  .sugg-section .sugg-group{ border:none; border-top:1px solid var(--line); border-radius:0; }
+
   .sugg-group{ border:1px solid var(--line); border-radius:9px; overflow:hidden; }
-  .sugg-group-head{ padding:11px 13px; background:rgba(255,255,255,0.02); }
+  .sugg-group-head{
+    padding:11px 13px; background:rgba(255,255,255,0.02);
+    display:flex; align-items:baseline; gap:8px; flex-wrap:wrap;
+  }
+  .sugg-group-type{
+    font-family:'IBM Plex Mono','Cascadia Mono',Consolas,monospace; font-size:9.5px;
+    letter-spacing:0.06em; text-transform:uppercase; color:var(--text-faint);
+  }
+  .sugg-group-head .sugg-headline{ flex:1 1 100%; margin-top:0; }
   .sugg-badge{
     display:inline-block; font-family:'IBM Plex Mono','Cascadia Mono',Consolas,monospace; font-size:10px;
     letter-spacing:0.06em; padding:2px 8px; border-radius:10px; margin-right:8px;
@@ -536,6 +616,21 @@
   .sugg-badge.relief{ background:rgba(232,96,76,0.15); color:var(--crit); }
   .sugg-badge.protect{ background:rgba(74,222,128,0.14); color:#4ADE80; }
   .sugg-badge.reclaim{ background:rgba(125,211,252,0.14); color:#7DD3FC; }
+  .sugg-badge.orphan{ background:rgba(167,139,250,0.16); color:var(--purple); }
+  .sugg-badge.spread{ background:rgba(242,166,90,0.15); color:var(--warn); }
+  .sugg-badge.sacrifice{ background:rgba(232,96,76,0.22); color:#F0A99E; }
+
+  /* On a row, not a heading, so smaller. A row carrying two of these is doing
+     two jobs for one copy, which is worth spotting at a glance. */
+  .sugg-reasons{ display:inline-flex; gap:4px; flex-shrink:0; }
+  .sugg-reasons .sugg-badge{ font-size:9px; padding:1px 5px; }
+  .sugg-reasons.multi .sugg-badge{ box-shadow:inset 0 0 0 1px currentColor; }
+
+  .sugg-sacrifice-head{
+    display:flex; align-items:baseline; gap:8px; padding:10px 13px;
+    border-top:1px solid rgba(232,96,76,0.3); background:rgba(232,96,76,0.06);
+    font-size:12px; color:#F0A99E; line-height:1.6;
+  }
   .sugg-headline{ font-size:12.5px; color:var(--text-dim); line-height:1.6; margin-top:6px; }
 
   .sugg-item{
@@ -580,7 +675,22 @@
     padding:3px 0; font-size:11.5px;
   }
   .sugg-spread-bar{ height:4px; background:var(--seg-empty); border-radius:2px; margin-top:5px; }
-  .sugg-spread-fill{ height:100%; background:var(--purple); border-radius:2px; }
+  .sugg-spread-bar{ display:flex; }
+  .sugg-spread-fill{ height:100%; background:var(--purple); border-radius:2px 0 0 2px; }
+  /* The difference the ticked ones make, striped so it reads as a projection
+     rather than as space already used. Green when the drive sheds load. */
+  .sugg-spread-after{
+    height:100%; border-radius:0 2px 2px 0;
+    background-image:repeating-linear-gradient(-45deg,
+      rgba(167,139,250,0.85) 0 3px, rgba(167,139,250,0.25) 3px 6px);
+  }
+  .sugg-spread-after.down{
+    background-image:repeating-linear-gradient(-45deg,
+      rgba(74,222,128,0.8) 0 3px, rgba(74,222,128,0.2) 3px 6px);
+  }
+  .ss-pct.down{ color:#4ADE80; }
+  .ss-pct.up{ color:var(--warn); }
+  .ss-changed{ color:var(--purple); }
 
   /* ---- connected / disconnected indicators ---- */
   .conn-dot{
@@ -978,6 +1088,14 @@
   }
   .root-type-badge.redundancy{ background:rgba(242,166,90,0.12); color:var(--warn); }
 
+  /* An unplugged drive still shows its tree, but nothing that reads the files
+     can run, so those buttons say so rather than failing when pressed. */
+  .node-btn:disabled{ opacity:0.3; cursor:not-allowed; }
+  .node-btn:disabled:hover{ background:none; color:inherit; }
+  /* Every one of these reads or writes the drive, so an unplugged one shows
+     none of them rather than a row of dead buttons. */
+  .node-actions.offline > *, .node-danger.offline > *{ display:none; }
+
   /* How many titles sit here, at three levels: the whole library, one drive,
      and one category folder. */
   .space-split{
@@ -1111,6 +1229,9 @@
   }
 
   /* ---- multi-select + bulk tagging ---- */
+  /* Hidden rather than disabled: a greyed checkbox on half the page is more
+     confusing than one that simply is not offered while a selection is open. */
+  .node.sel-locked .sel-box{ visibility:hidden; }
   .sel-box{
     appearance:none; width:13px; height:13px; flex-shrink:0; cursor:pointer;
     border:1px solid var(--line); border-radius:3px; background:var(--panel-raised);
@@ -1256,6 +1377,18 @@
       <span class="caret">▾</span>
     </button>
     {% endif %}
+    {% if flat_drives %}
+    <button class="alert-pill crit" data-alert="flatlayout">
+      <span class="ai">🪛</span> {{ flat_drives|length }} drive(s) not laid out in categories
+      <span class="caret">▾</span>
+    </button>
+    {% endif %}
+    {% if same_drive_dups %}
+    <button class="alert-pill warn" data-alert="samedrive">
+      <span class="ai">⚠</span> {{ same_drive_dups|length }} title(s) copied onto their own drive
+      <span class="caret">▾</span>
+    </button>
+    {% endif %}
 
     {% if stats.session_zero %}
     <div class="alert-detail crit" id="alert-session0">
@@ -1264,6 +1397,36 @@
       and playing a file gives audio from a window you cannot see or close.
       The scheduled task is set to "Run whether user is logged on or not";
       change it to <b>Run only when user is logged on</b> and restart it.
+    </div>
+    {% endif %}
+    {% if flat_drives %}
+    <div class="alert-detail crit" id="alert-flatlayout">
+      These drives hold media directly inside the library folder (Videos), with
+      no category folders in between. All reporting such as counting media,
+      backup matching and largest folders panel will be wrong for these drives
+      until this is fixed.
+      <br><br>
+      {% for d in flat_drives %}
+      <b>{{ d.label }}</b>: {{ d.known }} of {{ d.total }} top level folders look
+      like a category. Found {{ d.unknown[:4]|join(', ') }}{% if d.unknown|length > 4 %},
+      and {{ d.unknown|length - 4 }} more{% endif %}.<br>
+      {% endfor %}
+      <br>
+      Move each show into a category folder such as <b>Anime</b>, <b>Movie</b>,
+      <b>TV Shows</b> and <b>Anime Movies</b>, then scan again.
+    </div>
+    {% endif %}
+    {% if same_drive_dups %}
+    <div class="alert-detail warn" id="alert-samedrive">
+      <b>These titles sit in a drive's library and its redundancy folder at the
+      same time.</b> That protects nothing, since losing the drive loses both,
+      and it costs {{ same_drive_dup_h }}. MediaVault will not create this, so
+      these arrived on a drive that already had them. Delete the copy under the
+      redundancy folder, or move it to another drive to make it a real backup.
+      <br><br>
+      {% for e in same_drive_dups %}
+      <b>{{ e.drive_label }}</b>: {{ e.name }}<br>
+      {% endfor %}
     </div>
     {% endif %}
     {% if low_space_drives %}
@@ -1443,7 +1606,8 @@
     <input type="checkbox" class="sel-box" title="Select this title"
            data-drive-id="{{ node.drive_id }}" data-rel-path="{{ node.rel_path }}"
            data-node-id="{{ node.id }}" data-name="{{ node.name }}"
-           data-size="{{ node.size_h }}" data-is-dir="{{ 1 if node.is_dir else 0 }}">
+           data-size="{{ node.size_h }}" data-is-dir="{{ 1 if node.is_dir else 0 }}"
+           data-root-type="{{ node.root_type }}">
   {% endmacro %}
 
   {# Everything that describes the title sits directly after its name, in a
@@ -1535,31 +1699,51 @@
   {# The everyday action sits beside the name. Delete is deliberately not
      next to it: it lives at the far right edge, past the size, with a
      divider, so reaching for play cannot land on it. #}
+  {# data-can is whether this button works at all, which only promote ever
+     answers no to. Being unplugged is the wrapper's job: it hides the set. #}
+  {% macro transfer_btn(cls, node, icon, title, can) %}
+    <button class="node-btn {{ cls }}" data-node-id="{{ node.id }}"
+            data-name="{{ node.name }}" data-size="{{ node.size_h }}"
+            data-drive-id="{{ node.drive_id }}"
+            data-can="{{ 1 if can else 0 }}" data-title="{{ title }}"
+            {{ 'disabled' if not can }} title="{{ title }}">{{ icon }}</button>
+  {% endmacro %}
+
+  {# Every action here reads or writes the drive, so an unplugged one shows
+     none of them. A disconnected drive says so on its own card, and a row of
+     dead buttons explains nothing the header has not already said. #}
   {% macro node_actions(node) %}
-    <span class="node-actions">
+    <span class="node-actions {{ '' if node.drive_connected else 'offline' }}">
       <button class="node-btn open-btn" data-node-id="{{ node.id }}"
               title="{{ 'Open this folder' if node.is_dir else 'Play this file' }}">
         {% if node.is_dir %}{{ icon_folder() }}{% else %}{{ icon_play() }}{% endif %}
       </button>
       {# Move and back up act on whole titles, so only depth 2 gets them. #}
       {% if node.depth == 2 %}
-      <button class="node-btn move-btn" data-node-id="{{ node.id }}"
-              data-name="{{ node.name }}" data-size="{{ node.size_h }}"
-              data-drive-id="{{ node.drive_id }}"
-              title="Move to another drive">{{ icon_move() }}</button>
-      <button class="node-btn copy-btn" data-node-id="{{ node.id }}"
-              data-name="{{ node.name }}" data-size="{{ node.size_h }}"
-              data-drive-id="{{ node.drive_id }}"
-              title="Copy to another drive as a backup">{{ icon_copy() }}</button>
+      {{ transfer_btn('move-btn', node, icon_move(), 'Move to another drive', true) }}
+      {{ transfer_btn('copy-btn', node, icon_copy(), 'Copy to another drive as a backup', true) }}
+      {# Only backups can be promoted, and only once nothing is left for them
+         to be a copy of. Shown disabled on the rest so it is clear what it
+         is for rather than absent and undiscoverable. #}
+      {% if node.root_type == 'redundancy' %}
+      {{ transfer_btn('promote-btn', node, icon_promote(),
+           'Promote: no copy of this is left anywhere, so make it a library title on this drive'
+           if node.is_orphan_backup else
+           'The original is still on another drive, so this is a working backup rather than an orphan',
+           node.is_orphan_backup) }}
+      {% endif %}
       {% endif %}
     </span>
   {% endmacro %}
 
   {% macro icon_move() %}<svg viewBox="0 0 16 16" class="ic" aria-hidden="true"><path d="M2 8h10.5M9 4.4L12.9 8 9 11.6" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/></svg>{% endmacro %}
+  {# An arrow up out of a tray: this copy comes up out of the backup folder
+     and becomes the real thing. #}
+  {% macro icon_promote() %}<svg viewBox="0 0 16 16" class="ic" aria-hidden="true"><path d="M8 10.5V2.6M5 5.6L8 2.5l3 3.1" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/><path d="M2.6 10.2v2.3a1 1 0 0 0 1 1h8.8a1 1 0 0 0 1-1v-2.3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>{% endmacro %}
   {% macro icon_copy() %}<svg viewBox="0 0 16 16" class="ic" aria-hidden="true"><path d="M8 1.9l4.6 1.9v3.6c0 2.7-1.9 4.9-4.6 5.8-2.7-.9-4.6-3.1-4.6-5.8V3.8z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>{% endmacro %}
 
   {% macro node_danger(node) %}
-    <span class="node-danger">
+    <span class="node-danger {{ '' if node.drive_connected else 'offline' }}">
       <button class="node-btn del-btn" data-node-id="{{ node.id }}"
               data-name="{{ node.name }}" data-size="{{ node.size_h }}"
               data-is-dir="{{ 1 if node.is_dir else 0 }}"
@@ -1872,10 +2056,16 @@
       Nothing here happens until you tick it and press the button. Each one
       says why it is suggested and why that destination.
     </div>
-    <label class="ds-toggle sugg-recent">
-      <input type="checkbox" id="sugg-include-recent" onchange="loadSuggestions()">
-      Include titles added in the last <span id="sugg-recent-days">60</span> days
-    </label>
+    {# Ticks survive closing the panel without applying, so there has to be a
+       way to start over without hunting for them across sections. #}
+    <div class="sugg-recent-row">
+      <label class="ds-toggle sugg-recent">
+        <input type="checkbox" id="sugg-include-recent" onchange="loadSuggestions()">
+        Include titles added in the last <span id="sugg-recent-days">60</span> days
+      </label>
+      <button class="bulk-btn ghost sugg-clear" id="sugg-clear"
+              onclick="clearSuggestionTicks()">Deselect all</button>
+    </div>
     <div id="sugg-body" class="sugg-body"></div>
     <div class="modal-actions">
       <button class="bulk-btn ghost" onclick="closeSuggestions()">Close</button>
@@ -1932,6 +2122,25 @@
     </div>
 
     <div class="set-effective" id="set-effective"></div>
+
+    <div class="set-divider"></div>
+
+    {# Only the suggestion engine reads these. #}
+    <div class="set-section">
+      <div class="set-label">Backup weights</div>
+      <div class="set-note">
+        Weight how important backing media is, based on category. A higher
+        weight means distributing backups for that category is prioritized.
+      </div>
+      <div id="set-weights" class="set-weights"></div>
+      <div class="set-weight-actions">
+        <button class="bulk-btn" onclick="seedWeights()">Calibrate weight based on size</button>
+        <button class="bulk-btn ghost" onclick="resetWeights()">Reset defaults</button>
+      </div>
+      <div class="set-note" id="set-weights-note"></div>
+    </div>
+
+    <div class="set-divider"></div>
 
     <div class="set-section">
       <div class="set-label">Backup target</div>
@@ -3003,10 +3212,29 @@ async function loadSuggestions(){
 }
 
 const SUGG_TITLES = {
+  orphan: 'Backups with nothing left to be a copy of',
   relief: 'Running out of space',
   protect: 'Worth keeping, but only in one place',
-  reclaim: 'SSD space worth freeing'
+  reclaim: 'SSD space worth freeing',
+  spread: 'Too much protection on one drive'
 };
+
+/* Clears the ticks and lets every destination follow the ranking again, so
+   the panel reads exactly as it did on a cold open. */
+function clearSuggestionTicks(){
+  document.querySelectorAll('.sugg-check').forEach(box => { box.checked = false; });
+  document.querySelectorAll('#sugg-body select').forEach(select => {
+    delete select.dataset.picked;
+  });
+  refreshTargets();
+  updateSuggestionSummary();
+}
+
+/* Only worth offering once something is ticked. */
+function refreshSuggestionClear(){
+  const button = document.getElementById('sugg-clear');
+  if(button) button.style.visibility = checkedSuggestions().length ? '' : 'hidden';
+}
 
 function renderSuggestions(){
   const data = suggestionData;
@@ -3031,7 +3259,16 @@ function renderSuggestions(){
     body.appendChild(empty);
   }
 
-  (data.groups || []).forEach(group => body.appendChild(buildSuggestionGroup(group)));
+  // One section per reason, holding that reason's per-drive groups. The
+  // server already returns them in priority order, so first appearance is
+  // the order to keep.
+  const byReason = new Map();
+  (data.groups || []).forEach(group => {
+    if(!byReason.has(group.reason)) byReason.set(group.reason, []);
+    byReason.get(group.reason).push(group);
+  });
+  byReason.forEach((groups, reason) =>
+    body.appendChild(buildSuggestionSection(reason, groups)));
 
   if(data.redundancy && data.redundancy.total_titles){
     body.appendChild(buildSpreadPanel(data.redundancy));
@@ -3041,18 +3278,73 @@ function renderSuggestions(){
   updateSuggestionSummary();
 }
 
+/* Which sections the user has opened. Kept outside the render so a refresh
+   after tagging does not fold everything back up. */
+const openSuggSections = new Set();
+
+/* A reason, collapsed, summarising every drive it covers. Opening it gives
+   the per-drive groups unchanged. Collapsed by default so the whole set of
+   proposals fits on screen before you choose which to read. */
+function buildSuggestionSection(reason, groups){
+  const box = document.createElement('details');
+  box.className = 'sugg-section';
+  box.open = openSuggSections.has(reason);
+  box.addEventListener('toggle', () => {
+    box.open ? openSuggSections.add(reason) : openSuggSections.delete(reason);
+  });
+
+  const candidates = groups.reduce((n, g) => n + g.candidates.length, 0);
+  const bytes = groups.reduce(
+    (n, g) => n + g.candidates.reduce((m, c) => m + (c.size_bytes || 0), 0), 0);
+
+  const head = document.createElement('summary');
+  head.className = 'sugg-section-head';
+
+  const badge = document.createElement('span');
+  badge.className = 'sugg-badge ' + reason;
+  badge.textContent = reason;
+
+  const title = document.createElement('b');
+  title.textContent = SUGG_TITLES[reason] || reason;
+
+  const count = document.createElement('span');
+  count.className = 'sugg-section-count';
+  count.textContent = `${candidates} title${candidates === 1 ? '' : 's'}`
+    + (groups.length > 1 ? ` on ${groups.length} drives` : ` on ${groups[0].label}`)
+    + (bytes ? `, ${humanBytes(bytes)}` : '');
+
+  const caret = document.createElement('span');
+  caret.className = 'sugg-section-caret';
+  caret.textContent = '▾';
+
+  head.append(badge, title, count, caret);
+  box.appendChild(head);
+
+  groups.forEach(g => box.appendChild(buildSuggestionGroup(g)));
+  return box;
+}
+
+function humanBytes(n){
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  while(n >= 1024 && i < units.length - 1){ n /= 1024; i++; }
+  return (n >= 100 || i === 0 ? Math.round(n) : n.toFixed(1)) + ' ' + units[i];
+}
+
 function buildSuggestionGroup(group){
   const box = document.createElement('div');
   box.className = 'sugg-group';
 
   const head = document.createElement('div');
   head.className = 'sugg-group-head';
-  const badge = document.createElement('span');
-  badge.className = 'sugg-badge ' + group.reason;
-  badge.textContent = group.reason;
+  // The section above already names the reason, so here it is the drive that
+  // needs identifying: one reason often covers several.
   const title = document.createElement('b');
-  title.textContent = SUGG_TITLES[group.reason] || group.reason;
-  head.append(badge, title);
+  title.textContent = group.label;
+  const type = document.createElement('span');
+  type.className = 'sugg-group-type';
+  type.textContent = group.type_label || '';
+  head.append(title, type);
   const headline = document.createElement('div');
   headline.className = 'sugg-headline';
   headline.textContent = group.headline;
@@ -3060,7 +3352,41 @@ function buildSuggestionGroup(group){
   box.appendChild(head);
 
   group.candidates.forEach(c => box.appendChild(buildSuggestionItem(group, c)));
+
+  // Only ever present when every move that could have helped has been counted
+  // and the drive is still short, so it belongs with the relief it serves
+  // rather than in a section of its own at the bottom of the page.
+  if((group.sacrifice || []).length){
+    const head = document.createElement('div');
+    head.className = 'sugg-sacrifice-head';
+    const badge = document.createElement('span');
+    badge.className = 'sugg-badge sacrifice';
+    badge.textContent = 'sacrifice';
+    const text = document.createElement('span');
+    text.textContent = `Moving everything that can move still leaves this drive `
+      + `${humanBytes(group.shortfall_bytes)} short. These backups can be deleted `
+      + `to cover it. The originals are untouched.`;
+    head.append(badge, text);
+    box.appendChild(head);
+    group.sacrifice.forEach(c => box.appendChild(buildSuggestionItem(group, c)));
+  }
   return box;
+}
+
+/* Every reason this row satisfies, its own section's included. Repeating the
+   section's badge is worth it: without it a row addressing two things reads
+   as addressing only the one it happens to be filed under. */
+function buildReasonChips(candidate){
+  const wrap = document.createElement('span');
+  wrap.className = 'sugg-reasons';
+  (candidate.reasons || []).forEach(reason => {
+    const chip = document.createElement('span');
+    chip.className = 'sugg-badge ' + reason;
+    chip.textContent = reason;
+    wrap.appendChild(chip);
+  });
+  if((candidate.reasons || []).length > 1) wrap.classList.add('multi');
+  return wrap;
 }
 
 function buildSuggestionItem(group, candidate){
@@ -3071,7 +3397,13 @@ function buildSuggestionItem(group, candidate){
   box.type = 'checkbox';
   box.className = 'sugg-check';
   box.dataset.nodeId = candidate.node_id;
-  box.dataset.operation = group.reason === 'protect' ? 'copy' : 'move';
+  // The confirmation lists promotions and deletions by name, and neither has
+  // a destination row to read it from.
+  box.dataset.name = candidate.name;
+  // The candidate's own operation wins where it has one: promoting and
+  // deleting are not moves, however the group is headed.
+  box.dataset.operation = candidate.operation
+    || (group.reason === 'protect' ? 'copy' : 'move');
   box.addEventListener('change', () => {
     refreshTargets();
     updateSuggestionSummary();
@@ -3086,29 +3418,41 @@ function buildSuggestionItem(group, candidate){
   const size = document.createElement('span');
   size.className = 'sugg-size';
   size.textContent = candidate.size_h;
-  name.append(label, size, buildSuggestionTags(candidate));
+  name.append(label, size, buildReasonChips(candidate), buildSuggestionTags(candidate));
 
   const why = document.createElement('div');
   why.className = 'sugg-why';
   why.textContent = candidate.why;
 
-  // Destination, changeable, with the reasoning for the default.
+  // Destination, changeable, with the reasoning for the default. Promote and
+  // delete have none: they act on the title where it already sits.
+  const targetless = TARGETLESS.has(box.dataset.operation);
   const arrow = document.createElement('div');
-  arrow.className = 'sugg-arrow';
+  arrow.className = 'sugg-arrow' + (targetless ? ' targetless' : '');
   arrow.append(document.createTextNode(
-    group.reason === 'protect' ? 'Copy to ' : 'Move to '));
+    targetless
+      ? (box.dataset.operation === 'promote'
+          ? 'Becomes a library title on this drive'
+          : 'Deleted permanently from this drive')
+      : (group.reason === 'protect' ? 'Copy to ' : 'Move to ')));
   // Options are filled by refreshTargets(), which projects each destination
   // against whatever is already ticked.
   const select = document.createElement('select');
   select.addEventListener('change', () => {
+    // Chosen by hand, so the ranking stops overriding it from here on.
+    select.dataset.picked = '1';
     const chosen = candidate.targets.find(t => t.drive_id === select.value);
-    targetWhy.textContent = chosen ? chosen.why : '';
+    targetWhy.textContent = describeTargetWhy(
+      chosen, (committedBackups()[select.value] || {}).count || 0);
     updateSpareWarning(chosen, spare);
-    // Changing where this one goes moves bytes between drives, so every
-    // other row's remaining space has to be worked out again.
-    if(box.checked) refreshTargets();
+    // Changing where this one goes moves bytes and backups between drives,
+    // so every other row and the spread panel have to be worked out again.
+    if(box.checked){
+      refreshTargets();
+      updateSuggestionSummary();
+    }
   });
-  arrow.appendChild(select);
+  if(!targetless) arrow.appendChild(select);
 
   const targetWhy = document.createElement('div');
   targetWhy.className = 'sugg-target-why';
@@ -3171,13 +3515,40 @@ function projectTarget(target, candidate, committed, isBackup){
   return {freeAfter, pctAfter, already};
 }
 
-function describeTarget(target, projected, isBackup){
+/* The reasoning under the dropdown, rebuilt against what is ticked. The
+   server sends everything that does not move; only the "holds N" sentence is
+   composed here, because only the page knows what is committed. */
+function describeTargetWhy(target, addedBackups){
+  if(!target) return '';
+  if(target.is_flash || target.backups_here === undefined) return target.why;
+  const added = addedBackups || 0;
+  const held = target.backups_here + added;
+  const spreadsFurther = 'Fine, but a drive with fewer would spread the risk further.';
+  let holds;
+  if(held === 0){
+    holds = 'Holds no backups yet, so a copy here spreads the risk rather than '
+          + 'adding to one pile.';
+  } else if(added === 0){
+    // Nothing ticked has landed here, so this is simply how the drive is.
+    holds = `Already holds ${held} backup${held === 1 ? '' : 's'}. ${spreadsFurther}`;
+  } else {
+    holds = `Will hold ${held} backup${held === 1 ? '' : 's'} once the ticked `
+          + `ones land. ${spreadsFurther}`;
+  }
+  return holds + (target.why_extras || '');
+}
+
+function describeTarget(target, projected, isBackup, addedBackups){
   const free = `${gb(projected.freeAfter).toFixed(0)} GB free`;
   const pct = `${projected.pctAfter.toFixed(1)}% free`;
   const after = projected.already ? ' after the ones ticked above' : ' afterwards';
   if(isBackup){
-    return `${target.label} · ${target.backups_here} backup(s) here · `
-         + `${free} (${pct})${after}`;
+    // Projected, not the figure from build time. Ticking a backup for this
+    // drive has to be visible on every other row that could go here, or the
+    // list still reads as if the drive were empty.
+    const held = target.backups_here + (addedBackups || 0);
+    const holds = `${held} backup${held === 1 ? '' : 's'} here`;
+    return `${target.label} · ${holds} · ${free} (${pct})${after}`;
   }
   return `${target.label} · ${free} (${pct})${after}`;
 }
@@ -3185,16 +3556,53 @@ function describeTarget(target, projected, isBackup){
 /* Rewrite every unticked row's destination list against what is now
    committed. A ticked row is left alone: its choice has been made, and
    moving it under the user would be worse than a slightly stale figure. */
+/* Ticking a backup makes its destination a worse home for the next one, so
+   concentration is projected forward the same way space is. Without this a
+   whole set of spread suggestions would point at the same empty drive. */
+function committedBackups(){
+  const out = {};
+  document.querySelectorAll('.sugg-item').forEach(row => {
+    if(!row.parts) return;
+    const box = row.querySelector('.sugg-check');
+    if(!box.checked) return;
+    const candidate = row.parts.candidate;
+    // Only what actually lands a backup somewhere: a new copy, or a backup
+    // being moved. Moving a library title changes no one's protection.
+    if(!candidate.is_backup && box.dataset.operation !== 'copy') return;
+    const to = row.parts.select.value;
+    if(!to) return;
+    const entry = out[to] || (out[to] = {count: 0, weight: 0});
+    entry.count += 1;
+    entry.weight += candidate.weight || 0;
+  });
+  return out;
+}
+
+/* Promote and delete happen where the title already is, so they have no
+   destination to pick and none of the target machinery applies to them. */
+const TARGETLESS = new Set(['promote', 'delete']);
+
+function isTargetless(box){
+  return TARGETLESS.has(box.dataset.operation);
+}
+
 function refreshTargets(){
   const committed = committedBytes();
+  const added = committedBackups();
+  const heldNow = t => (t.weight_held || 0) + ((added[t.drive_id] || {}).weight || 0);
 
   document.querySelectorAll('.sugg-item').forEach(row => {
     if(!row.parts) return;
     const box = row.querySelector('.sugg-check');
-    if(box.checked) return;
+    // Nothing to re-rank, and nothing that could take the row's option away.
+    if(box.checked || isTargetless(box)) return;
 
     const {select, targetWhy, spare, candidate} = row.parts;
+    // Two different questions. Only a copy may fill a drive past its own
+    // threshold, but a moved backup lands on the target just the same, so it
+    // counts towards what that drive will be holding.
     const isBackup = box.dataset.operation === 'copy';
+    const landsBackup = isBackup || !!candidate.is_backup;
     const previous = select.value;
 
     const usable = [];
@@ -3208,7 +3616,11 @@ function refreshTargets(){
       const tierA = a.target.tier, tierB = b.target.tier;
       if(tierA && tierB){
         for(let i = 0; i < Math.max(tierA.length, tierB.length); i++){
-          const d = (tierA[i] || 0) - (tierB[i] || 0);
+          // Slot 3 is how much backup the drive already carries, which moves
+          // as rows are ticked, so the live figure replaces the built one.
+          const d = i === 3
+            ? heldNow(a.target) - heldNow(b.target)
+            : (tierA[i] || 0) - (tierB[i] || 0);
           if(d) return d;
         }
       } else if(a.target.rank !== b.target.rank){
@@ -3238,15 +3650,22 @@ function refreshTargets(){
     usable.forEach(({target, projected}) => {
       const option = document.createElement('option');
       option.value = target.drive_id;
-      option.textContent = describeTarget(target, projected, isBackup);
+      option.textContent = describeTarget(
+        target, projected, landsBackup,
+        (added[target.drive_id] || {}).count || 0);
       select.appendChild(option);
     });
 
-    // Keep the chosen drive if it is still viable, otherwise take the new best.
-    select.value = usable.some(u => u.target.drive_id === previous)
-      ? previous : usable[0].target.drive_id;
+    // A row you picked by hand keeps its drive while that stays viable.
+    // Anything you have not touched follows the ranking, which is the whole
+    // point of re-ranking: ticking one backup should visibly push the next
+    // one somewhere else, not quietly reorder a list nobody is reading.
+    const pinned = select.dataset.picked === '1'
+                   && usable.some(u => u.target.drive_id === previous);
+    select.value = pinned ? previous : usable[0].target.drive_id;
     const chosen = candidate.targets.find(t => t.drive_id === select.value);
-    targetWhy.textContent = chosen ? chosen.why : '';
+    targetWhy.textContent = describeTargetWhy(
+      chosen, (added[chosen ? chosen.drive_id : ''] || {}).count || 0);
     updateSpareWarning(chosen, spare);
   });
 }
@@ -3332,32 +3751,108 @@ function syncTreeTag(candidate, tag, turningOn){
 function buildSpreadPanel(spread){
   const box = document.createElement('div');
   box.className = 'sugg-spread';
+  box.id = 'sugg-spread-panel';
   const head = document.createElement('div');
-  head.innerHTML = `<b>Backup spread.</b> ${spread.total_titles} backed up title(s), `
-    + `${spread.total_h}, across ${spread.drives_holding} drive(s).`;
+  head.id = 'sugg-spread-head';
   box.appendChild(head);
 
-  spread.per_drive.filter(e => e.titles > 0).forEach(entry => {
+  spread.per_drive.forEach(entry => {
     const row = document.createElement('div');
     row.className = 'sugg-spread-row';
+    row.dataset.driveId = entry.drive_id;
     const name = document.createElement('span');
     name.textContent = entry.label + (entry.external ? ' (external)' : '');
     const count = document.createElement('span');
-    count.textContent = `${entry.titles} title(s)`;
+    count.className = 'ss-count';
     const pct = document.createElement('span');
-    pct.textContent = entry.share_pct + '%';
+    pct.className = 'ss-pct';
     row.append(name, count, pct);
     box.appendChild(row);
 
     const bar = document.createElement('div');
     bar.className = 'sugg-spread-bar';
+    bar.dataset.driveId = entry.drive_id;
+    // Two fills: where it sits now, and the difference the ticked ones make.
     const fill = document.createElement('div');
     fill.className = 'sugg-spread-fill';
-    fill.style.width = entry.share_pct + '%';
-    bar.appendChild(fill);
+    const after = document.createElement('div');
+    after.className = 'sugg-spread-after';
+    bar.append(fill, after);
     box.appendChild(bar);
   });
+  refreshSpreadPanel();
   return box;
+}
+
+/* Recomputes the panel against whatever is ticked. Shares move on weight,
+   since that is what concentration is measured in, but the count is what
+   gets shown: it is the figure you feel when a drive dies. */
+function refreshSpreadPanel(){
+  const panel = document.getElementById('sugg-spread-panel');
+  const spread = suggestionData && suggestionData.redundancy;
+  if(!panel || !spread) return;
+
+  const gained = committedBackups();
+  const lost = {};      // only a move takes a backup off its drive
+  document.querySelectorAll('.sugg-item').forEach(row => {
+    if(!row.parts) return;
+    const check = row.querySelector('.sugg-check');
+    if(!check.checked) return;
+    const candidate = row.parts.candidate;
+    if(!candidate.is_backup || check.dataset.operation !== 'move') return;
+    const entry = lost[candidate.drive_id]
+      || (lost[candidate.drive_id] = {count: 0, weight: 0});
+    entry.count += 1;
+    entry.weight += candidate.weight || 0;
+  });
+
+  const projected = spread.per_drive.map(e => {
+    const up = gained[e.drive_id] || {count: 0, weight: 0};
+    const down = lost[e.drive_id] || {count: 0, weight: 0};
+    return {
+      drive_id: e.drive_id,
+      was: e.share_pct,
+      titles: e.titles + up.count - down.count,
+      weight: Math.max(0, e.weight + up.weight - down.weight),
+    };
+  });
+  const total = projected.reduce((n, e) => n + e.weight, 0);
+  projected.forEach(e => {
+    e.share = total ? Math.round(1000 * e.weight / total) / 10 : 0;
+  });
+
+  const changed = projected.some(e => e.share !== e.was);
+  const totalTitles = projected.reduce((n, e) => n + e.titles, 0);
+  const holding = projected.filter(e => e.titles > 0).length;
+  document.getElementById('sugg-spread-head').innerHTML =
+    `<b>Backup spread.</b> ${totalTitles} backed up title(s), across ${holding} drive(s)`
+    + (changed ? ', <span class="ss-changed">as the ticked ones would leave it</span>.'
+               : '.');
+
+  const byId = Object.fromEntries(projected.map(e => [e.drive_id, e]));
+  panel.querySelectorAll('.sugg-spread-row').forEach(row => {
+    const e = byId[row.dataset.driveId];
+    // A drive that would gain its first backup is worth showing too.
+    row.style.display = e && (e.titles > 0 || e.was > 0) ? '' : 'none';
+    if(!e) return;
+    row.querySelector('.ss-count').textContent = `${e.titles} title(s)`;
+    const pct = row.querySelector('.ss-pct');
+    pct.textContent = e.share === e.was ? `${e.was}%` : `${e.was}% → ${e.share}%`;
+    pct.classList.toggle('down', e.share < e.was);
+    pct.classList.toggle('up', e.share > e.was);
+  });
+  panel.querySelectorAll('.sugg-spread-bar').forEach(bar => {
+    const e = byId[bar.dataset.driveId];
+    // A bar goes with its row, or a hidden drive leaves an empty stripe.
+    bar.style.display = e && (e.titles > 0 || e.was > 0) ? '' : 'none';
+    if(!e) return;
+    // Solid is the smaller of the two, so the striped part is the difference
+    // whichever way it moved.
+    bar.querySelector('.sugg-spread-fill').style.width = Math.min(e.was, e.share) + '%';
+    const after = bar.querySelector('.sugg-spread-after');
+    after.style.width = Math.abs(e.share - e.was) + '%';
+    after.classList.toggle('down', e.share < e.was);
+  });
 }
 
 function checkedSuggestions(){
@@ -3365,6 +3860,8 @@ function checkedSuggestions(){
 }
 
 function updateSuggestionSummary(){
+  refreshSuggestionClear();
+  refreshSpreadPanel();
   const checked = checkedSuggestions();
   const summary = document.getElementById('sugg-summary');
   document.getElementById('sugg-go').disabled = checked.length === 0;
@@ -3373,11 +3870,12 @@ function updateSuggestionSummary(){
     summary.textContent = 'Tick the ones you want. Nothing happens until you do.';
     return;
   }
-  const moves = checked.filter(c => c.dataset.operation === 'move').length;
-  const copies = checked.length - moves;
+  const count = op => checked.filter(c => c.dataset.operation === op).length;
   const parts = [];
-  if(moves) parts.push(`${moves} move(s)`);
-  if(copies) parts.push(`${copies} backup(s)`);
+  if(count('move')) parts.push(`${count('move')} move(s)`);
+  if(count('copy')) parts.push(`${count('copy')} backup(s)`);
+  if(count('promote')) parts.push(`${count('promote')} promotion(s)`);
+  if(count('delete')) parts.push(`${count('delete')} deletion(s)`);
 
   const groups = groupSuggestions(checked).length;
   summary.textContent = parts.join(' and ')
@@ -3389,9 +3887,38 @@ function updateSuggestionSummary(){
 
 /* Ticked items grouped into one batch per destination and operation. Order
    is the order they were ticked in, which is the order they will run. */
+/* Every line the confirmation lists, transfers first, then the two that act
+   in place. */
+function suggestionConfirmList(batches, promotes, deletes){
+  return batches.map(b =>
+      `${b.operation === 'copy' ? 'Back up' : 'Move'} ${b.node_ids.length} title(s) `
+      + `to ${driveDisplayName(b.target_drive_id) || b.target_drive_id}`)
+    .concat(promotes.map(b => `Promote ${b.dataset.name} into its own drive's library`))
+    .concat(deletes.map(b => `Delete the backup of ${b.dataset.name}, permanently`))
+    .join('\n');
+}
+
+/* One action that acts in place. Both finish at once, so there is no job to
+   poll; a failure is reported and the rest still run. */
+async function postSuggestionAction(url, body){
+  try{
+    const data = await (await fetch(url, {
+      method: 'POST',
+      headers: postHeaders({'Content-Type': 'application/json'}),
+      body: JSON.stringify(body)
+    })).json();
+    if(!data.ok){ alert(data.error || 'That did not work.'); return false; }
+    return true;
+  } catch(e){
+    alert('Network error - is dashboard.py still running?');
+    return false;
+  }
+}
+
 function groupSuggestions(checked){
   const batches = new Map();
-  checked.forEach(box => {
+  // Transfers only. Promote and delete are neither, and run on their own.
+  checked.filter(box => !isTargetless(box)).forEach(box => {
     const target = box.selectEl.value;
     const key = box.dataset.operation + '|' + target;
     if(!batches.has(key)){
@@ -3410,6 +3937,8 @@ async function runSuggestions(){
   if(checked.length === 0) return;
 
   const batches = groupSuggestions(checked);
+  const promotes = checked.filter(c => c.dataset.operation === 'promote');
+  const deletes = checked.filter(c => c.dataset.operation === 'delete');
   const moves = checked.filter(c => c.dataset.operation === 'move').length;
 
   // The one path that can send many titles to several drives from a single
@@ -3422,18 +3951,42 @@ async function runSuggestions(){
         + 'removes the original. A backup leaves the original alone.'
       : 'Each title is copied into the destination’s redundancy folder. '
         + 'Nothing is removed.',
-    list: batches.map(b =>
-      `${b.operation === 'copy' ? 'Back up' : 'Move'} ${b.node_ids.length} title(s) `
-      + `to ${driveDisplayName(b.target_drive_id) || b.target_drive_id}`).join('\n'),
-    note: 'Runs in the background. Progress shows in the panel at the bottom.',
-    confirmLabel: moves ? 'Move them' : 'Back them up',
-    danger: moves > 0
+    list: suggestionConfirmList(batches, promotes, deletes),
+    note: deletes.length
+      ? 'The deletions are permanent and happen at once. Recycling them would '
+        + 'not free the space, which is the whole point of doing this.'
+      : 'Runs in the background. Progress shows in the panel at the bottom.',
+    confirmLabel: moves ? 'Move them'
+                        : (deletes.length ? 'Delete them' : 'Go ahead'),
+    danger: moves > 0 || deletes.length > 0
   });
   if(!ok) return;
 
   const button = document.getElementById('sugg-go');
   button.disabled = true;
   button.textContent = 'Starting…';
+
+  // These act on their own drive and finish immediately, so they run here
+  // rather than going through the transfer job.
+  let acted = 0;
+  for(const box of promotes){
+    if(await postSuggestionAction('/api/promote',
+        {node_id: Number(box.dataset.nodeId), confirm: true})) acted++;
+  }
+  for(const box of deletes){
+    if(await postSuggestionAction('/api/suggestions/sacrifice',
+        {node_id: Number(box.dataset.nodeId), confirm: true})) acted++;
+  }
+  if(acted) flashToast(`${acted} title(s) sorted out in place`);
+
+  // Nothing left to transfer, so there is no job to watch.
+  if(!batches.length){
+    button.disabled = false;
+    button.textContent = 'Do the ticked ones';
+    closeSuggestions();
+    setTimeout(reloadNow, 1200);
+    return;
+  }
 
   postJSON('/api/move', {batches: batches},
     (data) => {
@@ -3486,7 +4039,108 @@ async function openSettings(){
     toolPaths[saved.copy_tool] = savedPath;
   }
 
+  renderWeights(saved.backup_weights || {});
+  document.getElementById('set-weights-note').textContent = '';
   renderSettings();
+}
+
+/* ---------- backup weights ----------
+   One number per kind of title, highest first, so the order on screen is the
+   order the engine offers to spread them in. */
+const WEIGHT_LABELS = {
+  tv: 'TV shows', movies: 'Movies', anime: 'Anime',
+  anime_movies: 'Anime movies', other: 'Anything else'
+};
+
+function renderWeights(weights){
+  const box = document.getElementById('set-weights');
+  box.innerHTML = '';
+  Object.keys(WEIGHT_LABELS).forEach(key => {
+    const row = document.createElement('label');
+    row.className = 'set-weight';
+
+    const name = document.createElement('span');
+    name.className = 'set-weight-name';
+    name.textContent = WEIGHT_LABELS[key];
+
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.className = 'set-weight-input';
+    input.dataset.bucket = key;
+    input.min = '0.1';
+    input.step = '1';
+    input.value = weights[key] != null ? weights[key] : 1;
+
+    // Whole steps, but a calibrated 3.5 stays 3.5 until you touch it.
+    const step = (delta) => {
+      const now = parseFloat(input.value);
+      const next = (Number.isFinite(now) ? now : 1) + delta;
+      input.value = Math.max(0.1, Math.round(next * 10) / 10);
+    };
+
+    const stepper = document.createElement('span');
+    stepper.className = 'set-stepper';
+    stepper.append(
+      stepButton('−', 'Lower this weight', () => step(-1)),
+      input,
+      stepButton('+', 'Raise this weight', () => step(1)));
+
+    row.append(name, stepper);
+    box.appendChild(row);
+  });
+}
+
+function stepButton(glyph, title, onClick){
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'set-step';
+  b.textContent = glyph;
+  b.title = title;
+  b.addEventListener('click', onClick);
+  return b;
+}
+
+function currentWeights(){
+  const out = {};
+  document.querySelectorAll('.set-weight-input').forEach(input => {
+    const n = parseFloat(input.value);
+    out[input.dataset.bucket] = Number.isFinite(n) && n >= 0 ? n : 1;
+  });
+  return out;
+}
+
+async function seedWeights(){
+  const note = document.getElementById('set-weights-note');
+  note.textContent = 'Measuring your library…';
+  let data;
+  try{
+    data = await (await fetch('/api/settings/weights/suggest')).json();
+  } catch(e){
+    note.textContent = 'Could not reach the server.';
+    return;
+  }
+  if(!data.ok){ note.textContent = data.error || 'Could not work them out.'; return; }
+
+  const weights = currentWeights();
+  Object.entries(data.buckets).forEach(([key, info]) => { weights[key] = info.weight; });
+  renderWeights(weights);
+
+  // Said plainly, because size is only a proxy for what something is worth
+  // and it is wrong wherever a category happens to be small.
+  const parts = Object.entries(data.buckets)
+    .map(([key, i]) => `${WEIGHT_LABELS[key] || key} ${i.median_h}`);
+  note.innerHTML = 'From the median size of a title in each: ' + parts.join(', ')
+    + '. Size is only a stand-in for what losing something is worth, so raise '
+    + 'anything you care about more than its size suggests.'
+    + (data.excluded_drives.length
+        ? ` Left out ${data.excluded_drives.join(', ')}, which ${
+            data.excluded_drives.length === 1 ? 'is' : 'are'} not laid out in categories.`
+        : '');
+}
+
+function resetWeights(){
+  renderWeights(settingsState.default_weights || {});
+  document.getElementById('set-weights-note').textContent = 'Back to the defaults.';
 }
 
 function renderSettings(){
@@ -3735,7 +4389,8 @@ function saveSettings(){
       ? document.getElementById('set-path').value.trim() : '',
     verify_after_copy: document.getElementById('set-verify').checked,
     backup_target: document.getElementById('set-backup-target').value.trim(),
-    db_path: document.getElementById('set-db-path').value.trim()
+    db_path: document.getElementById('set-db-path').value.trim(),
+    backup_weights: currentWeights()
   }, (data) => {
     btn.disabled = false;
     closeSettings();
@@ -3797,7 +4452,8 @@ async function openMoveModal(operation){
     nodeId: Number(b.dataset.nodeId),
     name: b.dataset.name,
     size: b.dataset.size,
-    driveId: b.dataset.driveId
+    driveId: b.dataset.driveId,
+    backup: b.dataset.rootType === 'redundancy'
   })));
 }
 
@@ -3816,7 +4472,9 @@ async function openTransferModal(operation, items){
     nodeIds: items.map(i => i.nodeId),
     names: items.map(i => i.name),
     sizes: items.map(i => i.size),
-    driveIds: [...new Set(items.map(i => i.driveId))]
+    driveIds: [...new Set(items.map(i => i.driveId))],
+    // Selection is locked to one kind, so the first item speaks for all.
+    backups: items.length > 0 && items.every(i => i.backup)
   };
   moveTargetId = null;
 
@@ -3824,21 +4482,35 @@ async function openTransferModal(operation, items){
     ? 'Back up <span id="mv-count"></span> title(s)'
     : 'Move <span id="mv-count"></span> title(s)';
   document.getElementById('mv-count').textContent = items.length;
+  // A backup that moves stays a backup, so "lands in Anime" would be wrong
+  // about where it actually goes.
+  const backups = moveSelection.backups;
   document.querySelector('#move-backdrop .modal-body').textContent = copying
     ? 'Pick a drive. A copy goes into that drive\u2019s redundancy folder, under the '
       + 'matching category. The originals stay exactly where they are.'
-    : 'Pick a drive. Each title goes into the matching category there, so Anime '
-      + 'lands in Anime and Movies in Movies.';
+    : backups
+      ? 'Pick a drive. These are backups, so they stay backups: each one lands in '
+        + 'that drive’s redundancy folder, under the matching category.'
+      : 'Pick a drive. Each title goes into the matching category there, so Anime '
+        + 'lands in Anime and Movies in Movies.';
   document.getElementById('mv-note').textContent = copying
     ? 'Files are copied and checked. Nothing is removed from the source drive.'
     : 'Files are copied, checked, and only then removed from the source. If '
-      + 'anything goes wrong the original is left untouched.';
+      + 'anything goes wrong the original is left untouched.'
+      + (backups ? ' The original this backs up is not touched either.' : '');
   document.getElementById('mv-go').textContent = copying ? 'Back up' : 'Move';
   document.getElementById('mv-go').disabled = true;
 
-  document.getElementById('mv-names').textContent =
-    moveSelection.names.slice(0, 6).join('\n')
-    + (items.length > 6 ? `\n… and ${items.length - 6} more` : '');
+  // Sizes per item and totalled, so the figures on each destination row
+  // can be judged against what is actually being sent.
+  const shown = items.slice(0, 6)
+    .map(i => `${i.name}  (${i.size || '?'})`).join('\n');
+  const total = sumSizes(moveSelection.sizes);
+  document.getElementById('mv-names').textContent = shown
+    + (items.length > 6 ? `\n… and ${items.length - 6} more` : '')
+    + (items.length > 1
+        ? `\n\n${items.length} titles, ${gb(total).toFixed(1)} GB in total`
+        : '');
 
   // Where this is coming from. Picking a destination without being told the
   // source is guesswork when several drives hold a title of the same name.
@@ -3854,9 +4526,12 @@ async function openTransferModal(operation, items){
   document.getElementById('move-backdrop').classList.add('show');
 
   const source = moveSelection.driveIds.length === 1 ? moveSelection.driveIds[0] : '';
-  const url = copying
+  // The node ids let the server drop drives that already hold every one of
+  // these titles, and count the ones it would skip on the rest.
+  const nodes = '&nodes=' + encodeURIComponent(moveSelection.nodeIds.join(','));
+  const url = (copying
     ? '/api/copy/targets?source=' + encodeURIComponent(source)
-    : '/api/move/targets?exclude=' + encodeURIComponent(source);
+    : '/api/move/targets?exclude=' + encodeURIComponent(source)) + nodes;
 
   let targets = [];
   try{
@@ -3868,8 +4543,10 @@ async function openTransferModal(operation, items){
 
   if(targets.length === 0){
     list.innerHTML = '<div class="mv-empty">'
-      + (copying ? 'No other drive is connected.'
-                 : 'No other connected drive has a library folder to move into.')
+      + (copying
+          ? 'No connected drive can take this. Every other drive already holds a '
+            + 'copy, and a second copy beside the first is lost with it.'
+          : 'No other connected drive has a library folder and room for this.')
       + '</div>';
     return;
   }
@@ -3925,6 +4602,16 @@ function buildMoveTarget(t, needed){
   if(t.external){
     flags.appendChild(makeFlag('external', 'tag-ext',
       'Removable, so it can be unplugged and kept somewhere else'));
+  }
+  // Some of the selection is already here. Those are skipped rather than
+  // blocking the drive, so say how many before the drive is picked.
+  if(t.conflicts){
+    flags.appendChild(makeFlag(
+      `${t.conflicts} already here`, 'tag-skip',
+      `${t.conflict_names.join(', ')}`
+      + (t.conflicts > t.conflict_names.length ? ', and more' : '')
+      + `. Already on this drive, so ${t.conflicts === 1 ? 'it is' : 'they are'} `
+      + `skipped. ${t.movable} would go.`));
   }
   if(t.has_redundancy){
     flags.appendChild(makeFlag(`backups (${t.redundancy_titles})`, 'tag-red',
@@ -3998,11 +4685,14 @@ document.addEventListener('click', function(e){
   if(!btn) return;
   e.preventDefault();
   e.stopPropagation();
+  const node = btn.closest('.dir-node, .file-node');
+  const selBox = node ? node.querySelector('.sel-box') : null;
   openTransferModal(btn.classList.contains('copy-btn') ? 'copy' : 'move', [{
     nodeId: Number(btn.dataset.nodeId),
     name: btn.dataset.name,
     size: btn.dataset.size,
-    driveId: btn.dataset.driveId
+    driveId: btn.dataset.driveId,
+    backup: !!selBox && selBox.dataset.rootType === 'redundancy'
   }]);
 });
 
@@ -4246,7 +4936,27 @@ function selectedBoxes(){
   return [...document.querySelectorAll('.sel-box:checked')];
 }
 
+/* A selection has to be one drive and one kind, because move means something
+   different for each: a library title lands in a library, a backup lands in a
+   redundancy folder. Rather than refusing the mix later, everything that
+   cannot join the current selection is hidden while one is open. */
+function lockSelectionToKind(){
+  const chosen = selectedBoxes();
+  const all = [...document.querySelectorAll('.sel-box')];
+  if(chosen.length === 0){
+    all.forEach(b => b.closest('.node')?.classList.remove('sel-locked'));
+    return;
+  }
+  const drive = chosen[0].dataset.driveId;
+  const kind = chosen[0].dataset.rootType;
+  all.forEach(b => {
+    const compatible = b.dataset.driveId === drive && b.dataset.rootType === kind;
+    b.closest('.node')?.classList.toggle('sel-locked', !compatible);
+  });
+}
+
 function refreshSelectionBar(){
+  lockSelectionToKind();
   const n = selectedBoxes().length;
   document.getElementById('sel-n').textContent = n;
   document.getElementById('selection-bar').classList.toggle('show', n > 0);
@@ -4799,6 +5509,112 @@ document.addEventListener('click', function(e){
   // every copy of it, so there is nothing to do here.
   postTag(wrap.dataset.driveId, wrap.dataset.relPath, tag,
           turningOn ? 'add' : 'remove');
+});
+
+/* ---------- drives coming and going ----------
+   The page is rendered once, so a drive plugged in afterwards would keep its
+   greyed out buttons until a reload. Only the parts that depend on it are
+   redrawn, so scroll position, filters and open folders all survive. */
+const DRIVE_POLL_MS = 10000;
+function applyDriveConnected(card, connected, letter){
+  card.dataset.connected = connected ? '1' : '0';
+
+  const dot = card.querySelector('.conn-dot');
+  if(dot){
+    dot.className = 'conn-dot ' + (connected ? 'on' : 'off');
+    const name = card.querySelector('.drive-name');
+    const label = name ? name.textContent.trim() : 'This drive';
+    dot.title = connected ? `${label} is connected as ${letter}`
+                          : `${label} is not connected`;
+  }
+
+  const conn = card.querySelector('.conn-label');
+  if(conn){
+    conn.className = 'conn-label ' + (connected ? 'on' : 'off');
+    conn.textContent = connected ? `connected as ${letter}` : 'not connected';
+  }
+
+  // The whole set appears or disappears with the drive. Only promote has a
+  // reason of its own to stay disabled while the drive is there.
+  card.querySelectorAll('.node-actions, .node-danger').forEach(wrap => {
+    wrap.classList.toggle('offline', !connected);
+  });
+  card.querySelectorAll('.promote-btn').forEach(btn => {
+    btn.disabled = btn.dataset.can !== '1';
+  });
+}
+
+async function pollDriveState(){
+  let state;
+  try{
+    state = await (await fetch('/api/drives/state')).json();
+  } catch(e){ return; }              // offline or restarting, try again later
+  if(!state.ok) return;
+
+  Object.entries(state.drives).forEach(([driveId, info]) => {
+    const card = document.querySelector(`.drive[data-drive-id="${CSS.escape(driveId)}"]`);
+    if(!card) return;
+    // Only redraw on a change, so this costs nothing while nothing happens.
+    if((card.dataset.connected === '1') === info.connected) return;
+    applyDriveConnected(card, info.connected, info.letter);
+  });
+}
+
+setInterval(pollDriveState, DRIVE_POLL_MS);
+
+/* ---------- promote an orphaned backup ----------
+   A rename inside one drive, so it finishes at once. The server plans first
+   and the plan is what the confirmation shows, rather than the page guessing
+   where the title will land. */
+document.addEventListener('click', async function(e){
+  const btn = e.target.closest('.promote-btn');
+  if(!btn || btn.disabled) return;
+  e.preventDefault();
+  e.stopPropagation();
+
+  const nodeId = Number(btn.dataset.nodeId);
+  let planned;
+  try{
+    planned = await (await fetch('/api/promote', {
+      method: 'POST',
+      headers: postHeaders({'Content-Type': 'application/json'}),
+      body: JSON.stringify({node_id: nodeId})
+    })).json();
+  } catch(err){
+    alert('Network error - is dashboard.py still running?');
+    return;
+  }
+  if(!planned.ok){ alert(planned.error); return; }
+
+  const p = planned.plan;
+  const ok = await askConfirm({
+    title: `Promote ${p.name}?`,
+    body: `No copy of this is left anywhere, so it is not a backup of anything `
+        + `any more. This makes it a library title on <b>${p.drive_label}</b>, `
+        + `under ${p.category}.`,
+    list: `${p.from_rel}\n    becomes\n${p.to_rel}`,
+    note: 'A rename within the drive, so nothing is copied and it takes no extra '
+        + 'space. Rescan afterwards to see it in its new place.',
+    confirmLabel: 'Promote'
+  });
+  if(!ok) return;
+
+  let done;
+  try{
+    done = await (await fetch('/api/promote', {
+      method: 'POST',
+      headers: postHeaders({'Content-Type': 'application/json'}),
+      body: JSON.stringify({node_id: nodeId, confirm: true})
+    })).json();
+  } catch(err){
+    alert('Network error - is dashboard.py still running?');
+    return;
+  }
+  if(!done.ok){ alert(done.error); return; }
+  flashToast(`${p.name} is now a library title on ${p.drive_label}`);
+  // The tree still shows it under the redundancy root, so reload once the
+  // toast has been seen.
+  setTimeout(reloadNow, 1400);
 });
 
 /* ---------- tag add/remove ---------- */

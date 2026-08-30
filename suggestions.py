@@ -1,11 +1,19 @@
 """
 suggestions.py - what is worth moving or backing up, and where.
 
-Three kinds, all only ever proposals:
+Five kinds, all only ever proposals, in the order they are shown:
 
+    orphan    a backup whose original has gone, so it is the only copy left
     relief    a drive is past the free space it should keep
     protect   a starred title exists in only one place
     reclaim   an SSD is holding bulk media, and its space has standing value
+    spread    one drive holds too much of all the protection there is
+
+Relief can shed backups as well as library titles, since the original
+survives the move. Where every move has been counted and the drive is still
+short, it offers to delete backups instead, cheapest protection cost first
+and never the only copy of anything. That is the one destructive proposal
+here, and it sits inside the relief it serves rather than on its own.
 
 Moves rank destinations by what a write costs. A mechanical disk does not
 meaningfully wear from writes, so it comes first; an SSD is offered only when
@@ -25,8 +33,10 @@ Star marks what the backup suggestions offer. Neither is ever applied for you.
 
 import time
 
+import config
 import db
 import drivetypes
+import matching
 import moveops
 import scanner
 import tagging
@@ -45,6 +55,74 @@ CONCENTRATION_WARN_PCT = 60
 # episode away from warning again.
 RELIEF_MARGIN_PCT = 2
 
+# A cold storage drive is kept full on purpose and is closed to writes. It
+# reopens only once it has emptied well past its own threshold: a nearly full
+# flash-backed volume has few spare sectors, and writing into that is what
+# wears it. Hysteresis, so a drive that frees one title does not immediately
+# start collecting them again.
+COLD_REOPEN_USED_PCT = 70
+
+
+def cold_and_closed(drive):
+    """A cold storage drive still too full to accept writes."""
+    if not drive["cold_storage"]:
+        return False
+    total = drive["total_bytes"] or 0
+    if not total:
+        return True
+    used_pct = 100.0 * (total - drive["free_bytes"]) / total
+    return used_pct >= COLD_REOPEN_USED_PCT
+
+
+def backup_weights():
+    """What losing one backed up title of each kind costs, relative to the
+    others. Set in Settings; only the engine reads them."""
+    return config.load()["backup_weights"]
+
+
+def weights_from_sizes():
+    """
+    Weights seeded from your own library: the median size of a title in each
+    bucket, scaled so the smallest bucket comes out at 1.
+
+    The median, not the mean, because a handful of very large titles in one
+    bucket would otherwise speak for all of it. Size is only a proxy for what
+    losing something costs, and a poor one wherever a category happens to be
+    small, so this is a starting point to adjust rather than an answer.
+
+    Returns {bucket: {"median_bytes", "titles", "weight"}} for the buckets
+    that have any titles at all.
+    """
+    # A drive laid out flat has episodes where titles should be, so letting
+    # it into the medians would drag every bucket down.
+    flat = [d["drive_id"] for d in db.flat_layout_drives()]
+    out = {}
+    for bucket, sizes in db.library_sizes_by_weight_bucket(flat).items():
+        if not sizes:
+            continue
+        ordered = sorted(sizes)
+        mid = len(ordered) // 2
+        median = (ordered[mid] if len(ordered) % 2
+                  else (ordered[mid - 1] + ordered[mid]) / 2)
+        out[bucket] = {"median_bytes": median, "titles": len(sizes)}
+
+    # "other" is whatever did not match a category, so on a drive laid out
+    # flat it fills with episodes read as titles. Scaling against that would
+    # let one badly arranged drive set the whole scale, so the baseline comes
+    # from the classified buckets only.
+    baseline = min((v["median_bytes"] for k, v in out.items()
+                    if k != "other" and v["median_bytes"]), default=0)
+    for entry in out.values():
+        entry["weight"] = (round(entry["median_bytes"] / baseline, 1)
+                           if baseline else 1.0)
+    return out
+
+
+def weight_of(category, weights=None):
+    """The weight one title in this category carries."""
+    weights = weights if weights is not None else backup_weights()
+    return weights.get(tagging.weight_bucket_for_category(category), 1)
+
 
 def days_since(timestamp):
     if not timestamp:
@@ -52,17 +130,25 @@ def days_since(timestamp):
     return (time.time() - timestamp) / 86400.0
 
 
-def title_rows(drive_id):
-    """Every title on a drive, with its timestamps."""
+def title_rows(drive_id, include_backups=False):
+    """
+    Every title on a drive, with its timestamps and the category it sits in.
+
+    Backups are left out unless asked for. Relief wants them, since shedding
+    a copy costs nothing while the original survives, but nothing else does.
+    """
+    roots = ("library", "redundancy") if include_backups else ("library",)
     conn = db.get_conn()
     rows = conn.execute(
-        """
-        SELECT id, name, rel_path, size_bytes, created_at, modified_at, root_type
-        FROM nodes
-        WHERE drive_id = ? AND depth = 2 AND root_type = 'library'
-        ORDER BY size_bytes DESC
+        f"""
+        SELECT n.id, n.name, n.rel_path, n.size_bytes, n.created_at,
+               n.modified_at, n.root_type, p.name AS category
+        FROM nodes n JOIN nodes p ON n.parent_id = p.id
+        WHERE n.drive_id = ? AND n.depth = 2
+          AND n.root_type IN ({','.join('?' * len(roots))})
+        ORDER BY n.size_bytes DESC
         """,
-        (drive_id,),
+        (drive_id, *roots),
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -106,6 +192,13 @@ def describe_drives(connected):
             "type": drive_type,
             "cold_storage": cold,
             "external": scanner.is_external(mount) if mount else False,
+            # A mapped share or an rclone mount. Reads go over the network, so
+            # it is a worse home for something you play than any local disk.
+            "remote": (scanner.get_drive_type(mount) == scanner.DRIVE_REMOTE
+                       if mount else False),
+            # A cloud client's virtual drive. Never a destination: the space
+            # is a quota, not a disk, and a write queues an upload.
+            "cloud": scanner.is_cloud_drive(mount) if mount else False,
             "total_bytes": d["total_bytes"] or 0,
             "free_bytes": d["free_bytes"] or 0,
             "space": space,
@@ -141,9 +234,13 @@ def rank_targets(source, drives, size_needed):
             continue
         if not d["connected"] or not d["has_library"]:
             continue
-        # Cold storage is declared read-only, so writing to it contradicts
-        # the reason it is marked that way.
-        if d["cold_storage"]:
+        # Its space is a quota on someone else's computer, and a write here
+        # queues an upload rather than landing on a disk.
+        if d["cloud"]:
+            continue
+        # Cold storage is declared read-only until it has emptied enough to
+        # take writes without wearing itself out.
+        if cold_and_closed(d):
             continue
         # Never the destination of a move. Unpowered flash has no stated
         # retention and fails all at once, and a move leaves nothing behind.
@@ -158,23 +255,33 @@ def rank_targets(source, drives, size_needed):
         if pct_after < d["space"]["threshold_pct"]:
             continue
 
+        # Closest first. A title that lives here is one you play, and a local
+        # disk reads fastest and is the only one that cannot be unplugged, go
+        # offline, or walk out of the building. Backups rank the other way,
+        # in rank_backup_targets, where being elsewhere is the whole point.
         if d["type"] == drivetypes.SSD:
-            rank = 4
+            rank = 5
             why = ("An SSD, so only offered because nothing else has room. "
                    "Storing media here is the thing this is trying to undo.")
         elif d["type"] == drivetypes.PHONE:
-            rank = 3
+            rank = 4
             why = ("A phone, which is proper storage: a real controller, and "
-                   "powered daily so nothing goes stale. It leaves the house "
-                   "though, so the copy goes with it.")
+                   "powered daily so nothing goes stale. It is mounted over "
+                   "the network and it leaves the house, though, so the copy "
+                   "goes with it.")
+        elif d["remote"]:
+            rank = 3
+            why = ("A network drive. Fine for storage, but every read crosses "
+                   "the network, so playback is slower and depends on the far "
+                   "end being up.")
         elif d["external"]:
             rank = 2
             why = ("Removable, so fine for storage but not a permanent home. "
                    "It is not there when it is unplugged.")
         else:
             rank = 1
-            why = ("A mechanical disk with room, which is what these are for. "
-                   "Writes cost it nothing in wear.")
+            why = ("A local mechanical disk with room, which is what these are "
+                   "for. Fastest to play from, and writes cost it no wear.")
 
         options.append({
             "drive_id": d["drive_id"],
@@ -246,11 +353,17 @@ def redundancy_distribution(drives=None, summaries=None):
         scanner.get_connected_drives())
     summaries = summaries if summaries is not None else db.redundancy_summaries()
 
-    per_drive, total_titles, total_bytes = [], 0, 0
+    weights = backup_weights()
+    per_drive, total_titles, total_bytes, total_weight = [], 0, 0, 0.0
     for d in drives:
         summary = summaries.get(d["drive_id"], {"titles": 0, "size_bytes": 0})
+        # What losing this drive would cost, in weighted titles rather than
+        # bytes: thirty small shows hurt more than one large one.
+        weight = sum(weights.get(bucket, 1) * n
+                     for bucket, n in (summary.get("buckets") or {}).items())
         total_titles += summary["titles"]
         total_bytes += summary["size_bytes"]
+        total_weight += weight
         per_drive.append({
             "drive_id": d["drive_id"],
             "label": d["label"],
@@ -259,17 +372,24 @@ def redundancy_distribution(drives=None, summaries=None):
             "connected": d["connected"],
             "titles": summary["titles"],
             "size_bytes": summary["size_bytes"],
+            "buckets": dict(summary.get("buckets") or {}),
+            "weight": weight,
         })
 
     for entry in per_drive:
-        entry["share_pct"] = (round(100.0 * entry["titles"] / total_titles, 1)
-                              if total_titles else 0.0)
+        entry["share_pct"] = (round(100.0 * entry["weight"] / total_weight, 1)
+                              if total_weight else 0.0)
+        # Kept alongside, so the panel can still say "10 of 11 titles".
+        entry["title_share_pct"] = (round(100.0 * entry["titles"] / total_titles, 1)
+                                    if total_titles else 0.0)
 
-    worst = max(per_drive, key=lambda e: e["titles"], default=None)
+    worst = max(per_drive, key=lambda e: e["weight"], default=None)
     return {
-        "per_drive": sorted(per_drive, key=lambda e: -e["titles"]),
+        "per_drive": sorted(per_drive, key=lambda e: -e["weight"]),
         "total_titles": total_titles,
         "total_bytes": total_bytes,
+        "total_weight": total_weight,
+        "weights": weights,
         "drives_holding": sum(1 for e in per_drive if e["titles"] > 0),
         "worst_case": worst,
         "worst_case_pct": worst["share_pct"] if worst else 0.0,
@@ -304,7 +424,22 @@ def rank_backup_targets(source_drive_id, size_needed, drives=None, counts=None):
         # takes both, which is the case this exists to survive.
         if d["drive_id"] == source_drive_id:
             continue
+        if d["cloud"]:
+            continue
+        # Same rule as a move: a drive kept full on purpose is not somewhere
+        # to put a copy until it has emptied enough to take one.
+        if cold_and_closed(d):
+            continue
         if d["free_bytes"] - size_needed <= 0:
+            continue
+        # Protecting one title by pushing another drive into trouble just
+        # moves the problem. bytes_needed rather than the low flag, so a drive
+        # sitting in the margin above its threshold, which relief is already
+        # trying to shed from, is not handed more.
+        if bytes_needed(d) > 0:
+            continue
+        free_after = d["free_bytes"] - size_needed
+        if 100.0 * free_after / (d["total_bytes"] or 1) < d["space"]["threshold_pct"]:
             continue
 
         held = counts.get(d["drive_id"], {}).get("titles", 0)
@@ -312,6 +447,9 @@ def rank_backup_targets(source_drive_id, size_needed, drives=None, counts=None):
         is_ssd = d["type"] == drivetypes.SSD
         is_flash = drivetypes.is_flash(d["type"])
 
+        # The sentence about how much this drive holds is left to the client,
+        # which knows what is ticked and so what the drive will actually be
+        # holding. Everything that does not move is built here, once.
         if is_flash:
             why = (f"A {drivetypes.rule_for(d['type'])['label'].lower()}, so treat "
                    f"this as a spare copy rather than protection. Unpowered flash "
@@ -322,17 +460,19 @@ def rank_backup_targets(source_drive_id, size_needed, drives=None, counts=None):
         else:
             why = (f"Already holds {held} backup(s). Fine, but a drive with fewer "
                    f"would spread the risk further.")
+        why_extras = ""
 
         if not same_drive and not is_flash:
             if is_ssd:
-                why += (" An SSD though, which a backup gains nothing from and "
-                        "which has better uses for its space.")
+                why_extras += (" An SSD though, which a backup gains nothing from "
+                               "and which has better uses for its space.")
             if d["type"] == drivetypes.PHONE:
-                why += (" A phone counts as a real copy, and it is the one drive "
-                        "that is genuinely elsewhere. Losing or resetting it "
-                        "loses the copy.")
+                why_extras += (" A phone counts as a real copy, and it is the one "
+                               "drive that is genuinely elsewhere. Losing or "
+                               "resetting it loses the copy.")
             elif d["external"]:
-                why += " Removable, so it can be unplugged and kept elsewhere."
+                why_extras += " Removable, so it can be unplugged and kept elsewhere."
+            why += why_extras
 
         options.append({
             "drive_id": d["drive_id"],
@@ -341,11 +481,20 @@ def rank_backup_targets(source_drive_id, size_needed, drives=None, counts=None):
             "external": d["external"],
             "cold_storage": d["cold_storage"],
             "backups_held": held,
+            # Weighted, and sent because the client adds each ticked backup to
+            # it and re-ranks: a drive that just gained a show is a worse home
+            # for the next one.
+            "weight_held": counts.get(d["drive_id"], {}).get("weight", 0),
             "free_bytes": d["free_bytes"],
             "same_drive": same_drive,
             # The UI marks these so a spare copy never reads as protection.
             "counts_as_protection": not is_flash,
             "why": why,
+            # Everything after the "holds N" sentence, so the client can
+            # rebuild that sentence against what is ticked without owning a
+            # second copy of the rest.
+            "why_extras": why_extras,
+            "is_flash": is_flash,
             "backups_here": held,
             "total_bytes": d["total_bytes"],
             "threshold_pct": d["space"]["threshold_pct"],
@@ -367,6 +516,252 @@ def rank_backup_targets(source_drive_id, size_needed, drives=None, counts=None):
         o["tier"] = list(o["rank"][:5])
         del o["rank"]
     return options
+
+
+# Most important first. Orphans lead because promoting one is instant, costs
+# nothing, and until it happens the title is invisible to protect. Relief
+# comes next because a full drive is a problem right now.
+REASON_ORDER = {"orphan": 0, "relief": 1, "protect": 2, "reclaim": 3, "spread": 4}
+
+
+def orphan_groups(drives):
+    """
+    Backups whose original has gone, grouped by the drive they sit on.
+
+    Nothing is copied to fix one: the folder moves out of the redundancy root
+    into the library on the same drive. Until that happens the title is
+    counted as a backup of something that no longer exists, and protect
+    cannot see it at all.
+    """
+    library_keys = db.library_title_keys()
+    groups = []
+
+    for source in drives:
+        if not source["connected"]:
+            continue
+        candidates = []
+        for title in title_rows(source["drive_id"], include_backups=True):
+            if title["root_type"] != "redundancy":
+                continue
+            key = matching.title_key(title["name"]) or title["name"].strip().lower()
+            if key in library_keys:
+                continue
+            size_gb = (title["size_bytes"] or 0) / 2**30
+            candidates.append({
+                "node_id": title["id"],
+                "name": title["name"],
+                "drive_id": source["drive_id"],
+                "rel_path": title["rel_path"],
+                "size_bytes": title["size_bytes"] or 0,
+                "age_days": None,
+                "backed_up": False,
+                "starred": False,
+                "watching": False,
+                "is_backup": True,
+                "reasons": ["orphan"],
+                "operation": "promote",
+                "why": (f"{size_gb:.0f} GB filed as a backup, but no copy of it "
+                        f"is left anywhere else, so it is not a copy of "
+                        f"anything. Promoting it moves it into this drive's "
+                        f"library. Nothing is copied and no space is needed."),
+                "targets": [],
+                "offline_targets": [],
+                "suggested_target": source["drive_id"],
+            })
+
+        if candidates:
+            groups.append({
+                "drive_id": source["drive_id"],
+                "label": source["label"],
+                "type_label": drivetypes.rule_for(source["type"])["label"],
+                "reason": "orphan",
+                "headline": (f"{len(candidates)} backup(s) on {source['label']} have "
+                             f"no original left anywhere. They are the only copy."),
+                "free_pct": source["space"]["free_pct"],
+                "threshold_pct": source["space"]["threshold_pct"],
+                "deficit_bytes": 0,
+                "would_free": 0,
+                "candidates": candidates,
+            })
+    return groups
+
+
+def spread_groups(drives, spread, counts, weights, summaries, existing):
+    """
+    Backups piled onto one drive, offered to whoever holds least.
+
+    Only the drive carrying the most is worth thinning, and only while a move
+    would actually lower its share. Anything relief has already proposed is
+    left out, so the same move never appears twice under two headings.
+    """
+    worst = spread.get("worst_case")
+    if not worst or not spread["total_weight"]:
+        return []
+
+    source = next((d for d in drives if d["drive_id"] == worst["drive_id"]), None)
+    if source is None or not source["connected"]:
+        return []
+
+    # Perfectly even would be one share each. Well past that is worth saying
+    # something about; near it is just noise.
+    holders = max(1, sum(1 for e in spread["per_drive"] if e["titles"]))
+    even_share = 100.0 / max(holders, 2)
+    if worst["share_pct"] < max(CONCENTRATION_WARN_PCT, even_share * 1.5):
+        return []
+
+    already = {c["node_id"] for g in existing for c in g["candidates"]}
+    candidates = []
+    for title in title_rows(source["drive_id"], include_backups=True):
+        if title["root_type"] != "redundancy" or title["id"] in already:
+            continue
+        size = title["size_bytes"] or 0
+        targets = [t for t in rank_backup_targets(source["drive_id"], size, drives, counts)
+                   if spread_gain(source["drive_id"], t["drive_id"],
+                                  title["category"], counts, weights)]
+        if not targets:
+            continue
+        w = weight_of(title["category"], weights)
+        candidates.append({
+            "node_id": title["id"],
+            "name": title["name"],
+            "drive_id": source["drive_id"],
+            "rel_path": title["rel_path"],
+            "size_bytes": size,
+            "age_days": None,
+            "backed_up": False,
+            "starred": False,
+            "watching": False,
+            "is_backup": True,
+            "reasons": ["spread"],
+            "why": (f"{source['label']} holds {worst['share_pct']}% of all your "
+                    f"protection. Moving this one elsewhere means a single "
+                    f"failure takes less of it at once."),
+            "weight": w,
+            "targets": targets,
+            "offline_targets": offline_options(drives, size, for_backup=True,
+                                               summaries=summaries),
+            "suggested_target": targets[0]["drive_id"],
+        })
+
+    if not candidates:
+        return []
+
+    # Heaviest first: a show is worth more than an anime film, so it is the
+    # one worth getting off the pile before the lighter ones.
+    candidates.sort(key=lambda c: (-c["weight"], -c["size_bytes"]))
+    return [{
+        "drive_id": source["drive_id"],
+        "label": source["label"],
+        "type_label": drivetypes.rule_for(source["type"])["label"],
+        "reason": "spread",
+        "headline": (f"{source['label']} holds {worst['share_pct']}% of every backup "
+                     f"you have. Losing it would take most of your protection "
+                     f"at once."),
+        "free_pct": source["space"]["free_pct"],
+        "threshold_pct": source["space"]["threshold_pct"],
+        "deficit_bytes": 0,
+        "would_free": sum(c["size_bytes"] for c in candidates),
+        "candidates": candidates,
+    }]
+
+
+def sacrifice_candidates(source, shortfall, copies_by_key, starred,
+                         drives, counts, weights):
+    """
+    Backups worth deleting when moving things off a drive cannot free enough.
+
+    Last resort, and only ever reached because every non-destructive option
+    has already been counted and fallen short. A backup that could still be
+    moved somewhere that improves the spread is never offered: relieving the
+    drive by moving it costs nothing, so deleting it would be strictly worse.
+    Ordered by what it costs:
+    copies that another backup already covers first, then ones no protect
+    rule cared about, then the ones that genuinely undo a protect. A title
+    whose only copy is this one is never offered, whatever else is true.
+    """
+    out = []
+    for title in title_rows(source["drive_id"], include_backups=True):
+        if title["root_type"] != "redundancy":
+            continue
+
+        key = matching.title_key(title["name"]) or title["name"].strip().lower()
+        others = [c for c in copies_by_key.get(key, []) if c["id"] != title["id"]]
+        if not any(c["root_type"] == "library" for c in others):
+            continue        # an orphan: this is the only copy there is
+
+        # Somewhere it could go that also thins out the pile. If one exists,
+        # spread will offer that move, and offering to delete the same title
+        # at the same time is a contradiction.
+        if any(spread_gain(source["drive_id"], t["drive_id"],
+                           title["category"], counts, weights)
+               for t in rank_backup_targets(source["drive_id"],
+                                            title["size_bytes"] or 0,
+                                            drives, counts)):
+            continue
+
+        spare = [c for c in others if c["root_type"] == "redundancy"]
+        is_starred = title["rel_path"] in starred
+        if spare:
+            tier, cost = 0, (f"Another backup of this is on "
+                             f"{spare[0]['drive_label']}, so deleting this one "
+                             f"costs no protection at all.")
+        elif not is_starred:
+            tier, cost = 1, ("The only backup, but the title is not starred, so "
+                             "nothing was protecting it on purpose.")
+        else:
+            tier, cost = 2, ("The only backup of a starred title. Deleting it "
+                             "leaves that title in one place, undoing a protect "
+                             "to keep this drive alive.")
+
+        size = title["size_bytes"] or 0
+        original = next(c for c in others if c["root_type"] == "library")
+        out.append({
+            "node_id": title["id"],
+            "name": title["name"],
+            "drive_id": source["drive_id"],
+            "rel_path": title["rel_path"],
+            "size_bytes": size,
+            "age_days": None,
+            "backed_up": True,
+            "starred": is_starred,
+            "watching": False,
+            "is_backup": True,
+            "reasons": ["sacrifice"],
+            "operation": "delete",
+            "tier": tier,
+            "why": (f"{size / 2**30:.0f} GB. The original is on "
+                    f"{original['drive_label']} and is untouched. {cost}"),
+            "targets": [],
+            "offline_targets": [],
+            "suggested_target": None,
+        })
+
+    # Cheapest protection cost first, largest within each tier, then only as
+    # many as the shortfall actually needs. Deleting a starred title's last
+    # backup when a redundant one would have done is the mistake to avoid.
+    out.sort(key=lambda c: (c["tier"], -c["size_bytes"]))
+    taken, freed = [], 0
+    for candidate in out:
+        if freed >= shortfall:
+            break
+        taken.append(candidate)
+        freed += candidate["size_bytes"]
+    return taken
+
+
+def spread_gain(source_id, target_id, category, counts, weights):
+    """
+    The weight moving one backup would take off the source drive, or 0 when
+    the move would not improve the spread at all.
+
+    It only helps if the target carries less than the source. Otherwise the
+    copy has just been poured onto the next pile, and moving a library title
+    would have freed the same space without concentrating anything.
+    """
+    w = weight_of(category, weights)
+    here = counts.get(source_id, {}).get("weight", 0)
+    there = counts.get(target_id, {}).get("weight", 0)
+    return w if there + w <= here else 0
 
 
 def paths_with_tag(tags_by_path, wanted):
@@ -441,6 +836,9 @@ def protect_groups(drives, by_id, backed_up, notes, counts, summaries):
                 "backed_up": False,
                 "starred": True,
                 "watching": title["rel_path"] in watching,
+                "is_backup": False,
+                "reasons": ["protect"],
+                "weight": weight_of(title["category"]),
                 "why": why,
                 "targets": targets,
                 "offline_targets": offline_options(drives, title["size_bytes"] or 0,
@@ -491,8 +889,10 @@ def build(include_recent=False, recent_days=RECENT_DAYS):
     # Worked out once and threaded through. Both are the same for every
     # candidate, and asking per candidate was most of the cost of a build.
     summaries = db.redundancy_summaries()
+    copies_by_key = db.copies_by_title_key()
     spread = redundancy_distribution(drives, summaries)
     counts = {e["drive_id"]: e for e in spread["per_drive"]}
+    weights = spread["weights"]
 
     groups = []
     skipped_recent = 0
@@ -520,7 +920,10 @@ def build(include_recent=False, recent_days=RECENT_DAYS):
         else:
             continue
 
-        titles = title_rows(source["drive_id"])
+        # Relief can shed backups too: the original survives the move, so it
+        # risks nothing. Reclaim is about media that does not need an SSD's
+        # speed, which is a library question.
+        titles = title_rows(source["drive_id"], include_backups=(reason == "relief"))
         if not titles:
             continue
 
@@ -530,24 +933,52 @@ def build(include_recent=False, recent_days=RECENT_DAYS):
 
         candidates, freed = [], 0
         for title in titles:
-            # Tagged as in use, so never move it. Unlike the age window this
-            # is not a guess, and no checkbox overrides it.
-            if title["rel_path"] in watching:
-                skipped_watching += 1
-                continue
+            is_backup = title["root_type"] == "redundancy"
 
-            age = age_of(title)
-            if age is not None and age < recent_days and not include_recent:
-                skipped_recent += 1
-                continue
+            # Both filters protect something you are using or just added.
+            # Neither means anything for a backup: moving one disturbs
+            # nothing, since the original stays put and stays playable.
+            if not is_backup:
+                if title["rel_path"] in watching:
+                    skipped_watching += 1
+                    continue
+                age = age_of(title)
+                if age is not None and age < recent_days and not include_recent:
+                    skipped_recent += 1
+                    continue
+            else:
+                age = None
 
-            targets = rank_targets(source, drives, title["size_bytes"] or 0)
+            size = title["size_bytes"] or 0
+            if is_backup:
+                targets = rank_backup_targets(source["drive_id"], size, drives, counts)
+            else:
+                targets = rank_targets(source, drives, size)
             if not targets:
                 continue
 
             has_copy = bool(backed_up.get(title["id"]))
-            size_gb = (title["size_bytes"] or 0) / 2**30
-            if reason == "relief":
+            size_gb = size / 2**30
+            reasons = [reason]
+
+            if is_backup:
+                gain = spread_gain(source["drive_id"], targets[0]["drive_id"],
+                                   title["category"], counts, weights)
+                why = (f"{size_gb:.0f} GB, and a backup rather than the only copy, "
+                       f"so moving it risks nothing.")
+                if gain:
+                    reasons.append("spread")
+                    after = counts.get(source["drive_id"], {}).get("weight", 0) - gain
+                    share_after = (round(100.0 * after / spread["total_weight"], 1)
+                                   if spread["total_weight"] else 0.0)
+                    why += (f" It also thins out {source['label']}, which holds "
+                            f"{counts.get(source['drive_id'], {}).get('share_pct', 0)}% "
+                            f"of all your protection, down to about {share_after}%.")
+                else:
+                    why += (" Every drive with room already holds as much backup "
+                            "as this one, so it frees space without improving how "
+                            "the copies are spread.")
+            elif reason == "relief":
                 why = (f"{size_gb:.0f} GB, one of the largest here, so moving it "
                        f"clears the most in a single go.")
             else:
@@ -557,7 +988,7 @@ def build(include_recent=False, recent_days=RECENT_DAYS):
                        f"disk does not wear from writes.")
             if age is not None:
                 why += f" Last gained content {round(age)} days ago."
-            if has_copy:
+            if has_copy and not is_backup:
                 why += " Already backed up elsewhere, so the move risks less."
 
             candidates.append({
@@ -565,23 +996,35 @@ def build(include_recent=False, recent_days=RECENT_DAYS):
                 "name": title["name"],
                 "drive_id": source["drive_id"],
                 "rel_path": title["rel_path"],
-                "size_bytes": title["size_bytes"] or 0,
+                "size_bytes": size,
                 "age_days": round(age) if age is not None else None,
                 "backed_up": has_copy,
                 "starred": title["rel_path"] in starred,
                 "watching": False,
+                "is_backup": is_backup,
+                "reasons": reasons,
+                "weight": weight_of(title["category"], weights) if is_backup else 0,
                 "why": why,
                 "targets": targets,
-                "offline_targets": offline_options(drives, title["size_bytes"] or 0,
+                "offline_targets": offline_options(drives, size,
+                                                   for_backup=is_backup,
                                                    summaries=summaries),
                 "suggested_target": targets[0]["drive_id"],
             })
-            freed += title["size_bytes"] or 0
+            freed += size
 
             # Relief only needs enough to clear the threshold. Moving more
             # than that is writes spent for nothing.
             if reason == "relief" and freed >= deficit:
                 break
+
+        # Deleting a backup is the last resort, so it is only reached once
+        # every move that could have helped has been counted and the drive is
+        # still short. Anything that can be moved is moved instead.
+        shortfall = max(0, deficit - freed) if reason == "relief" else 0
+        sacrifice = (sacrifice_candidates(source, shortfall, copies_by_key,
+                                          starred, drives, counts, weights)
+                     if shortfall else [])
 
         if not candidates:
             if deficit > 0:
@@ -596,6 +1039,10 @@ def build(include_recent=False, recent_days=RECENT_DAYS):
                                  f"recent, or there is no drive with room for it.")
             continue
 
+        # Multi-purpose first, since one move buying two things is strictly
+        # better value than one buying one, then largest.
+        candidates.sort(key=lambda c: (-len(c["reasons"]), -c["size_bytes"]))
+
         groups.append({
             "drive_id": source["drive_id"],
             "label": source["label"],
@@ -607,12 +1054,14 @@ def build(include_recent=False, recent_days=RECENT_DAYS):
             "deficit_bytes": deficit,
             "would_free": freed,
             "candidates": candidates,
+            "sacrifice": sacrifice,
+            "shortfall_bytes": shortfall,
         })
 
-    # Relief first: those drives have an actual problem.
     groups.extend(protect_groups(drives, by_id, backed_up, notes, counts, summaries))
-    groups.sort(key=lambda g: ({"relief": 0, "protect": 1, "reclaim": 2}[g["reason"]],
-                               -g["would_free"]))
+    groups.extend(orphan_groups(drives))
+    groups.extend(spread_groups(drives, spread, counts, weights, summaries, groups))
+    groups.sort(key=lambda g: (REASON_ORDER.get(g["reason"], 99), -g["would_free"]))
 
     if spread["total_titles"] and spread["worst_case_pct"] >= CONCENTRATION_WARN_PCT:
         notes.append(

@@ -27,6 +27,14 @@ DEFAULTS = {
     # Where mediavault.db lives. Empty means next to the code. MEDIAVAULT_DB
     # overrides both.
     "db_path": "",
+    # What losing one backed up title of each kind would cost, relative to
+    # each other. Only the suggestion engine reads these: they decide which
+    # drive counts as holding too much of your protection, and which titles
+    # it offers to spread first. Counting titles rather than bytes is
+    # deliberate, since losing thirty small shows hurts more than losing one
+    # large one. Settings can reseed them from your own median title sizes.
+    "backup_weights": {"tv": 5, "movies": 3, "anime": 2, "anime_movies": 1,
+                       "other": 2},
 }
 
 
@@ -41,6 +49,16 @@ def load():
     except (OSError, ValueError):
         # Missing or unreadable file just means defaults.
         pass
+
+    # Merged rather than replaced, so a weight saved before a new bucket
+    # existed does not leave that bucket without one.
+    weights = dict(DEFAULTS["backup_weights"])
+    stored_weights = settings.get("backup_weights")
+    if isinstance(stored_weights, dict):
+        for key, value in stored_weights.items():
+            if key in weights and isinstance(value, (int, float)) and value >= 0:
+                weights[key] = value
+    settings["backup_weights"] = weights
     return settings
 
 
