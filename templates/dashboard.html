@@ -657,9 +657,15 @@
     font-family:'IBM Plex Sans','Segoe UI',system-ui,sans-serif; max-width:100%;
   }
   .sugg-target-why{ font-size:11px; color:var(--text-faint); line-height:1.55; }
+  /* One dim line, since a long list of unplugged drives drowns out the
+     suggestion itself. The drives are in its tooltip. */
   .sugg-offline{
-    font-size:11px; color:var(--warn); margin-top:6px; line-height:1.55;
+    font-size:11px; color:#B08A5E; margin-top:6px; line-height:1.55;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%;
+    border-bottom:1px dotted rgba(176,138,94,0.45); display:inline-block;
+    cursor:help;
   }
+  .sugg-offline:hover{ color:var(--warn); }
   .sugg-note{
     font-size:12px; color:#F0C89A; background:rgba(242,166,90,0.08);
     border:1px solid rgba(242,166,90,0.3); border-radius:8px;
@@ -3623,12 +3629,15 @@ function buildSuggestionItem(group, candidate){
 
   right.append(name, why, arrow, targetWhy, spare);
 
-  // Drives that would suit but are not plugged in.
-  if((candidate.offline_targets || []).length){
+  // Drives that would suit but are not plugged in. Named in the tooltip only:
+  // a dozen of them inline buries the suggestion.
+  const offlineTargets = candidate.offline_targets || [];
+  if(offlineTargets.length){
     const offline = document.createElement('div');
     offline.className = 'sugg-offline';
-    offline.textContent = 'Also possible if connected: '
-      + candidate.offline_targets.map(o => `${o.label} (${o.free_h} free)`).join(', ');
+    offline.textContent = `Also possible on ${offlineTargets.length} `
+      + `drive${offlineTargets.length === 1 ? '' : 's'} that ${offlineTargets.length === 1 ? 'is' : 'are'} not connected`;
+    offline.title = offlineTargets.map(o => `${o.label} - ${o.free_h} free`).join('\n');
     right.appendChild(offline);
   }
 
