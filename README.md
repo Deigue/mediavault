@@ -174,6 +174,12 @@ tests the connection before saving and discards a remote it cannot reach.
 Passwords go to rclone through a pipe rather than a command line, and
 `scripts/phones.json` holds only the drive letter, volume name and path.
 
+For drives that should just be there instead, run
+`scripts\phone-watchdog.ps1` as a scheduled task every few minutes: it mounts
+a phone when it comes back on the network and unmounts it when it leaves, so
+a scan never stalls on a drive that cannot answer. Its docstring has the
+registration command and every timing it uses.
+
 All of it works without the shortcuts:
 
 ```

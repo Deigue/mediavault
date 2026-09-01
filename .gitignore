@@ -11,3 +11,7 @@ config.json
 # Your own phones - drive letters and volume names. The credentials are not
 # here, they live in rclone's own config.
 scripts/phones.json
+
+# Watchdog logs and its strike counts. Machine-local, and the rclone mount
+# logs name your own paths.
+scripts/logs/

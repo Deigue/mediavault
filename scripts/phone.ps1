@@ -8,12 +8,12 @@ have asked for it, so there is no scanning, no cache housekeeping and no CPU
 cost at all the rest of the time.
 
     powershell -File scripts\phone.ps1 add
-    powershell -File scripts\phone.ps1 mount   -Name pixel
+    powershell -File scripts\phone.ps1 mount   -Name <name>
     powershell -File scripts\phone.ps1 mount   -Name all
-    powershell -File scripts\phone.ps1 unmount -Name pixel
+    powershell -File scripts\phone.ps1 unmount -Name <name>
     powershell -File scripts\phone.ps1 unmount -Name all
     powershell -File scripts\phone.ps1 list
-    powershell -File scripts\phone.ps1 remove  -Name pixel
+    powershell -File scripts\phone.ps1 remove  -Name <name>
 
 Mounting deliberately holds the console it was started from. rclone has to
 keep running for the drive to exist, so the console is the honest
@@ -162,7 +162,7 @@ function Invoke-Add {
     Write-Output 'Adding a phone. Everything is asked once and remembered.'
     Write-Output ''
 
-    $name = Read-RequiredHost 'Short name (no spaces, e.g. pixel)'
+    $name = Read-RequiredHost 'Short name for this phone (no spaces)'
     $name = $name -replace '\s', ''
     if ($phones.ContainsKey($name)) { throw "A phone called '$name' already exists." }
 
