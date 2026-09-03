@@ -1086,6 +1086,24 @@
     font-size:11.5px; color:var(--text-faint); line-height:1.6;
     margin-top:12px; padding-top:11px; border-top:1px solid var(--line);
   }
+  /* A list that grew while being read. The border is the only part of it that
+     can say so without moving anything. */
+  @keyframes list-flash{
+    0%{ border-color:var(--warn); } 70%{ border-color:var(--warn); }
+    100%{ border-color:var(--line); }
+  }
+  .modal-name.flash{ animation:list-flash 1.8s ease-out; }
+
+  .net-probe{ margin:0 0 16px; }
+  .net-head{
+    display:flex; justify-content:space-between; align-items:center; gap:10px;
+    font-size:11.5px; color:var(--text-faint);
+  }
+  .net-bar-wrap{ margin-top:9px; }
+  .net-elapsed{
+    font-family:'IBM Plex Mono','Cascadia Mono',Consolas,monospace;
+    font-size:11px; color:var(--text-faint); margin-top:6px;
+  }
 
   .toast{
     position:fixed; left:50%; bottom:22px; transform:translate(-50%, calc(100% + 40px));
@@ -2101,6 +2119,7 @@
     <div class="modal-body" id="confirm-body"></div>
     <div class="modal-name" id="confirm-list" style="display:none;"></div>
     <div class="confirm-choices" id="confirm-choices" style="display:none;"></div>
+    <div id="confirm-extra" style="display:none;"></div>
     <div class="modal-actions">
       <button class="bulk-btn ghost" id="confirm-no">Cancel</button>
       <button class="bulk-btn apply" id="confirm-yes">Continue</button>
@@ -2514,15 +2533,25 @@ window.addEventListener('DOMContentLoaded', restoreViewState);
 
    Resolves to true or false. Pass `choices` instead of `confirmLabel` when a
    question has more than one way to say yes, and it resolves to the value of
-   whichever was picked, or false for cancel. */
-function askConfirm({title, body, list, note, confirmLabel, danger, choices}){
+   whichever was picked, or false for cancel.
+
+   `extra` is a node to show under the list, and `onOpen` is handed the
+   controls a dialog needs when its answer is still arriving: it may return a
+   teardown function, which runs whichever way the dialog closes. */
+function askConfirm({title, body, list, note, confirmLabel, danger, choices, extra, onOpen}){
   const backdrop = document.getElementById('confirm-backdrop');
-  document.getElementById('confirm-title').textContent = title;
+  const titleEl = document.getElementById('confirm-title');
+  titleEl.textContent = title;
   document.getElementById('confirm-body').innerHTML = body || '';
 
   const listEl = document.getElementById('confirm-list');
   listEl.style.display = list ? '' : 'none';
   listEl.textContent = list || '';
+
+  const extraEl = document.getElementById('confirm-extra');
+  extraEl.innerHTML = '';
+  extraEl.style.display = extra ? '' : 'none';
+  if(extra) extraEl.appendChild(extra);
 
   const noteEl = document.getElementById('confirm-note');
   noteEl.style.display = note ? '' : 'none';
@@ -2540,13 +2569,17 @@ function askConfirm({title, body, list, note, confirmLabel, danger, choices}){
   yes.classList.toggle('danger', !!danger);
   yes.classList.toggle('apply', !danger);
 
+  yes.disabled = false;
+
   return new Promise(resolve => {
+    let teardown = null;
     const finish = (answer) => {
       backdrop.classList.remove('show');
       yes.removeEventListener('click', onYes);
       no.removeEventListener('click', onNo);
       backdrop.removeEventListener('click', onOutside);
       document.removeEventListener('keydown', onKey);
+      if(teardown) teardown();
       resolve(answer);
     };
     const onYes = () => finish(true);
@@ -2555,7 +2588,7 @@ function askConfirm({title, body, list, note, confirmLabel, danger, choices}){
     const onKey = (e) => {
       if(e.key === 'Escape') finish(false);
       // Enter only means yes when there is one thing yes could mean.
-      if(e.key === 'Enter' && !choices && document.activeElement !== no) finish(true);
+      if(e.key === 'Enter' && !choices && !yes.disabled && document.activeElement !== no) finish(true);
     };
     yes.addEventListener('click', onYes);
     no.addEventListener('click', onNo);
@@ -2583,6 +2616,18 @@ function askConfirm({title, body, list, note, confirmLabel, danger, choices}){
     backdrop.classList.add('show');
     // Cancel, not a choice: nothing consequential should be one stray Enter away.
     (choices ? no : yes).focus();
+
+    if(onOpen) teardown = onOpen({
+      setTitle: (text) => { titleEl.textContent = text; },
+      setList: (text) => { listEl.style.display = ''; listEl.textContent = text; },
+      flashList: () => {
+        // Restart the animation rather than let a second arrival be silent.
+        listEl.classList.remove('flash');
+        void listEl.offsetWidth;
+        listEl.classList.add('flash');
+      },
+      enableConfirm: (on) => { yes.disabled = !on; },
+    });
   });
 }
 
@@ -2592,20 +2637,31 @@ function askConfirm({title, body, list, note, confirmLabel, danger, choices}){
    request open, because a full scan takes minutes. */
 let scanPollTimer = null;
 
+async function fetchScanTargets(){
+  const res = await fetch('/api/scan/targets');
+  const data = await res.json();
+  return {targets: data.targets || [], deferred: data.deferred || [],
+          network: data.network || {running: false, elapsed: 0, timeout: 1}};
+}
+
+function scanTargetLines(targets){
+  if(!targets.length) return 'No drives found to scan yet.';
+  return targets.map(t => `${t.label}   ${t.root}   (${t.reason})`).join('\n');
+}
+
 async function startScan(){
   const btn = document.getElementById('scan-btn');
 
-  let targets = [];
+  let first;
   try{
-    const res = await fetch('/api/scan/targets');
-    const data = await res.json();
-    targets = data.targets || [];
+    first = await fetchScanTargets();
   } catch(e){
     alert('Could not reach the server. Is dashboard.py still running?');
     return;
   }
 
-  if(targets.length === 0){
+  // Nothing to scan, and nothing still on its way either.
+  if(!first.targets.length && !first.deferred.length && !first.network.running){
     await askConfirm({
       title: 'No drives to scan',
       body: 'Connect a drive with a <code>Videos</code> folder on it, or scan '
@@ -2615,21 +2671,21 @@ async function startScan(){
     return;
   }
 
-  const ok = await askConfirm({
-    title: `Scan ${targets.length} drive${targets.length === 1 ? '' : 's'}?`,
-    body: 'This reads every folder on them, which can take a few minutes. '
-        + 'Nothing is changed on disk.',
-    list: targets.map(t => `${t.label}   ${t.root}   (${t.reason})`).join('\n'),
-    confirmLabel: 'Scan'
-  });
-  if(!ok) return;
+  // Filled in by the prompt as the network answer arrives, so the scan covers
+  // what was on screen when Scan was clicked.
+  const chosen = {targets: first.targets};
+  if(!await askScanTargets(first, chosen)) return;
 
   btn.disabled = true;
   btn.textContent = 'Scanning…';
   showScanPanel();
 
   try{
-    const res = await fetch('/api/scan', {method: 'POST', headers: postHeaders()});
+    const res = await fetch('/api/scan', {
+      method: 'POST',
+      headers: postHeaders({'Content-Type': 'application/json'}),
+      body: JSON.stringify({roots: chosen.targets.map(t => t.root)})
+    });
     const data = await res.json();
     if(!data.ok){
       alert(data.error || 'Could not start the scan.');
@@ -2642,6 +2698,128 @@ async function startScan(){
     alert('Could not start the scan. Is dashboard.py still running?');
     resetScanButton();
   }
+}
+
+/* The scan prompt, which opens before the answer is complete. The local
+   drives are known at once; a network share whose session has gone idle can
+   take most of a minute to answer. So the prompt shows what is known and
+   polls the same endpoint until the server's background probe finishes,
+   growing its list underneath the reader. */
+function askScanTargets(first, chosen){
+  const probe = buildNetProbe();
+  const title = (n) => `Scan ${n} drive${n === 1 ? '' : 's'}?`;
+
+  return askConfirm({
+    title: title(first.targets.length),
+    body: 'This reads every folder on them, which can take a few minutes. '
+        + 'Nothing is changed on disk.',
+    list: scanTargetLines(first.targets),
+    extra: probe.node,
+    confirmLabel: 'Scan',
+    onOpen: (dlg) => {
+      let timer = null;
+      const seen = new Set(first.targets.map(t => t.root));
+      let shown = scanTargetLines(first.targets);
+
+      dlg.enableConfirm(first.targets.length > 0);
+      probe.update(first);
+
+      const poll = async () => {
+        let data;
+        try{
+          data = await fetchScanTargets();
+        } catch(e){
+          return;   // a blip, and the prompt keeps whatever it already had
+        }
+
+        const lines = scanTargetLines(data.targets);
+        if(lines !== shown){
+          const fresh = data.targets.some(t => !seen.has(t.root));
+          data.targets.forEach(t => seen.add(t.root));
+          chosen.targets = data.targets;
+          shown = lines;
+          dlg.setTitle(title(data.targets.length));
+          dlg.setList(lines);
+          dlg.enableConfirm(data.targets.length > 0);
+          if(fresh) dlg.flashList();
+        }
+        probe.update(data);
+        if(data.network.running) timer = setTimeout(poll, 700);
+      };
+
+      if(first.network.running) timer = setTimeout(poll, 700);
+      return () => clearTimeout(timer);
+    }
+  });
+}
+
+/* The network line inside that prompt: how many shares are still unaccounted
+   for, and a button that reveals how long the probe has been at it. The probe
+   runs either way, so the button only decides whether it is on show. */
+function buildNetProbe(){
+  const node = document.createElement('div');
+  node.className = 'net-probe';
+  node.style.display = 'none';
+
+  const head = document.createElement('div');
+  head.className = 'net-head';
+  const label = document.createElement('span');
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'setup-defer-btn';
+  btn.textContent = 'Scan for network drives';
+  head.append(label, btn);
+
+  const barWrap = document.createElement('div');
+  barWrap.className = 'net-bar-wrap';
+  barWrap.style.display = 'none';
+  const track = document.createElement('div');
+  track.className = 'scan-progress';
+  const bar = document.createElement('div');
+  bar.className = 'scan-bar';
+  track.appendChild(bar);
+  const elapsed = document.createElement('div');
+  elapsed.className = 'net-elapsed';
+  barWrap.append(track, elapsed);
+
+  btn.onclick = () => { barWrap.style.display = ''; btn.style.display = 'none'; };
+  node.append(head, barWrap);
+
+  let ever = false;
+  return {
+    node,
+    update(data){
+      const net = data.network;
+      const waiting = data.deferred.length;
+      // Hidden entirely where there is no network drive to wait on, rather
+      // than reporting on something nobody asked about.
+      if(!ever && !net.running && !waiting) return;
+      ever = true;
+      node.style.display = '';
+
+      if(net.running){
+        label.textContent = waiting === 1
+          ? '1 network drive still being checked'
+          : `${waiting} network drives still being checked`;
+      } else {
+        // Still unaccounted for once the probe has stopped means it gave up
+        // on them, which is not the same as having checked them.
+        label.textContent = waiting
+          ? `${waiting} network drive${waiting === 1 ? '' : 's'} did not answer`
+          : 'Network drives checked.';
+        btn.style.display = 'none';
+      }
+
+      // The bar stops just short of the end while still waiting: the deadline
+      // is generous and a slow share usually answers well before it.
+      bar.style.width = (net.running
+        ? Math.min(net.elapsed / net.timeout, 0.97) * 100
+        : 100).toFixed(1) + '%';
+      elapsed.textContent = net.running
+        ? `${Math.round(net.elapsed)}s of up to ${Math.round(net.timeout)}s`
+        : 'Finished.';
+    }
+  };
 }
 
 function pollScan(){

@@ -829,7 +829,7 @@ def has_library_folders(drive_root, root_prefix=DEFAULT_ROOT_PREFIX,
     return False
 
 
-def find_scannable_drives():
+def find_scannable_drives(include_network=True):
     """
     Connected drives worth scanning: {root, drive_id, label, reason}.
 
@@ -837,11 +837,16 @@ def find_scannable_drives():
     folder. Everything else is left alone, so scanning does not create empty
     entries for the system drive or a stick that happens to be plugged in.
     Only lettered volumes are visible to Windows here, not bare UNC paths.
+
+    include_network False leaves network drives out and never waits on one,
+    which is what lets the scan prompt open at once. The network half is
+    filled in afterwards by start_network_target_scan.
     """
     known = {d["drive_id"]: d for d in db.get_all_drives()}
     # A scan is about to read these drives, so it is worth waking a sleeping
     # one to find out whether it is there rather than leaving it out.
-    connected = get_connected_drives(max_age=0, wait_for_network=True)
+    connected = get_connected_drives(max_age=0, include_network=include_network,
+                                     wait_for_network=include_network)
     by_root = {root: drive_id for drive_id, root in connected.items()}
 
     found = []
@@ -849,6 +854,8 @@ def find_scannable_drives():
     for root in sorted(list_mounted_roots()):
         drive_type = get_drive_type(root)
         if drive_type is not None and drive_type not in SCANNABLE_DRIVE_TYPES:
+            continue
+        if drive_type == DRIVE_REMOTE and not include_network:
             continue
 
         drive_id = by_root.get(root)
@@ -874,6 +881,73 @@ def find_scannable_drives():
                           "reason": "has a library folder"})
 
     return found
+
+
+# Finding scan targets is slow only because of the network: a share whose SMB
+# session has gone idle can take most of a minute to answer. So the prompt is
+# served from the local disks and the network half runs here, on a thread,
+# with enough state for the page to draw a progress bar against it.
+_targets_lock = threading.Lock()
+_network_targets = {"running": False, "started_at": None, "finished_at": None,
+                    "targets": None}
+
+
+def _run_network_target_scan():
+    found = None
+    try:
+        found = find_scannable_drives(include_network=True)
+    except Exception:
+        pass
+    with _targets_lock:
+        # A failed probe keeps the last good answer rather than emptying the
+        # list under a prompt the user is reading.
+        if found is not None:
+            _network_targets["targets"] = found
+        _network_targets.update(running=False, finished_at=time.monotonic())
+
+
+def start_network_target_scan():
+    """
+    Begin working out every drive worth scanning, network included, on a
+    background thread. Does nothing if a probe is already running or the last
+    answer is still fresh.
+    """
+    with _targets_lock:
+        if _network_targets["running"]:
+            return
+        done = _network_targets["finished_at"]
+        if done is not None and time.monotonic() - done < NETWORK_CACHE_SECONDS:
+            return
+        _network_targets.update(running=True, started_at=time.monotonic())
+
+    threading.Thread(target=_run_network_target_scan,
+                     name="mediavault-scan-targets", daemon=True).start()
+
+
+def network_target_scan():
+    """
+    How that probe is doing: {running, ready, elapsed, timeout, targets}.
+    elapsed and timeout are what the page draws its progress bar from.
+    """
+    with _targets_lock:
+        state = dict(_network_targets)
+
+    if state["started_at"] is None:
+        elapsed = 0.0
+    elif state["running"]:
+        # Never the previous run's finish time, which is older than this
+        # run's start and would read as negative.
+        elapsed = time.monotonic() - state["started_at"]
+    else:
+        elapsed = (state["finished_at"] or time.monotonic()) - state["started_at"]
+
+    return {
+        "running": state["running"],
+        "ready": state["targets"] is not None and not state["running"],
+        "elapsed": round(elapsed, 1),
+        "timeout": NETWORK_PROBE_TIMEOUT_SECONDS,
+        "targets": state["targets"] or [],
+    }
 
 
 def deferred_network_roots():

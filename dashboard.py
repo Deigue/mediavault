@@ -642,11 +642,39 @@ def api_tag_bulk():
     })
 
 
+def scan_targets_now():
+    """
+    What a scan would cover, without ever waiting on the network: the
+    background probe's answer once it has one, the local drives until then,
+    plus the network drives still unaccounted for.
+    """
+    network = scanner.network_target_scan()
+    if network["ready"]:
+        return network["targets"], [], network
+    return (scanner.find_scannable_drives(include_network=False),
+            scanner.deferred_network_roots(), network)
+
+
 @app.route("/api/scan", methods=["POST"])
 def api_scan():
-    """Start scanning every connected drive worth scanning. Returns at once
-    with a job the page polls, since a full scan takes minutes."""
-    job, problem = scanjob.start()
+    """
+    Start scanning. Returns at once with a job the page polls, since a full
+    scan takes minutes.
+
+    The page sends the roots its prompt listed, so a scan covers what was
+    agreed to rather than whatever a probe finds a moment later. Each is
+    checked against the drives actually worth scanning, so a request cannot
+    name an arbitrary path.
+    """
+    data = request.get_json(silent=True) or {}
+    wanted = data.get("roots")
+
+    targets, _deferred, _network = scan_targets_now()
+    if wanted:
+        keep = set(wanted)
+        targets = [t for t in targets if t["root"] in keep]
+
+    job, problem = scanjob.start(targets)
     if job is None:
         # 409: either a scan is already running, or there is nothing to scan.
         return jsonify({"ok": False, "error": problem}), 409
@@ -661,12 +689,24 @@ def api_scan_status():
 
 @app.route("/api/scan/targets")
 def api_scan_targets():
-    """Which drives a scan would cover right now, for the confirm prompt."""
-    targets = scanner.find_scannable_drives()
-    return jsonify({"ok": True, "targets": [
-        {"root": t["root"], "label": t.get("label") or t["root"], "reason": t["reason"]}
-        for t in targets
-    ]})
+    """
+    Which drives a scan would cover, for the confirm prompt.
+
+    The local drives are answered at once and the network ones are probed in
+    the background, since waking a sleeping share can take most of a minute
+    and the prompt should not be held open for it. The page polls this while
+    network.running is true and fills its list in as drives arrive.
+    """
+    scanner.start_network_target_scan()
+    targets, deferred, network = scan_targets_now()
+
+    return jsonify({
+        "ok": True,
+        "targets": [{"root": t["root"], "label": t.get("label") or t["root"],
+                     "reason": t["reason"]} for t in targets],
+        "deferred": deferred,
+        "network": {k: network[k] for k in ("running", "ready", "elapsed", "timeout")},
+    })
 
 
 @app.route("/api/node/<int:node_id>/locate")
