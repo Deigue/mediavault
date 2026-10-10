@@ -2957,7 +2957,9 @@ document.addEventListener('click', function(e){
   if(openBtn){
     e.preventDefault();
     e.stopPropagation();
-    postJSON('/api/node/open', {node_id: Number(openBtn.dataset.nodeId)});
+    postJSON('/api/node/open', {node_id: Number(openBtn.dataset.nodeId)}, data => {
+      if(data.pending) flashToast('Opening. The network drive is waking up, the window follows.');
+    });
     return;
   }
   const delBtn = e.target.closest('.del-btn');
@@ -4879,27 +4881,62 @@ async function openTransferModal(operation, items){
     ? '/api/copy/targets?source=' + encodeURIComponent(source)
     : '/api/move/targets?exclude=' + encodeURIComponent(source)) + nodes;
 
-  let targets = [];
+  const selection = moveSelection;
+  await loadMoveTargets(url, copying, selection);
+}
+
+/* Network drives come from the last background check, so the list opens at
+   once. While a check is running this asks again every couple of seconds and
+   redraws, keeping whichever drive was already picked. */
+async function loadMoveTargets(url, copying, selection){
+  const list = document.getElementById('mv-targets');
+  let data;
   try{
-    targets = ((await (await fetch(url)).json()).targets) || [];
+    data = await (await fetch(url)).json();
   } catch(e){
     list.innerHTML = '<div class="mv-empty">Could not reach the server.</div>';
     return;
   }
+  // Closed, or reopened for something else, while this was in flight.
+  if(moveSelection !== selection) return;
 
+  const targets = data.targets || [];
+  const checking = data.network && data.network.running;
+  list.innerHTML = '';
   if(targets.length === 0){
     list.innerHTML = '<div class="mv-empty">'
-      + (copying
-          ? 'No connected drive can take this. Every other drive already holds a '
-            + 'copy, and a second copy beside the first is lost with it.'
-          : 'No other connected drive has a library folder and room for this.')
+      + (checking
+          ? 'No local drive can take this.'
+          : copying
+            ? 'No connected drive can take this. Every other drive already holds a '
+              + 'copy, and a second copy beside the first is lost with it.'
+            : 'No other connected drive has a library folder and room for this.')
       + '</div>';
-    return;
+  } else {
+    const needed = sumSizes(selection.sizes);
+    targets.forEach(t => list.appendChild(buildMoveTarget(t, needed)));
   }
 
-  const needed = sumSizes(moveSelection.sizes);
-  list.innerHTML = '';
-  targets.forEach(t => list.appendChild(buildMoveTarget(t, needed)));
+  // A pick survives the redraw if that drive is still offered.
+  const picked = moveTargetId &&
+    list.querySelector(`.mv-target[data-drive-id="${CSS.escape(moveTargetId)}"]`);
+  if(picked){
+    picked.classList.add('chosen');
+    picked.querySelector('input').checked = true;
+  } else {
+    moveTargetId = null;
+    document.getElementById('mv-go').disabled = true;
+  }
+
+  if(checking){
+    const note = document.createElement('div');
+    note.className = 'mv-empty';
+    note.textContent = 'Checking network drives…';
+    list.appendChild(note);
+    setTimeout(() => {
+      if(moveSelection === selection) loadMoveTargets(url, copying, selection);
+    }, 2000);
+  }
 }
 
 /* Sizes are only available as formatted strings in the DOM, so this parses
@@ -4948,6 +4985,11 @@ function buildMoveTarget(t, needed){
   if(t.external){
     flags.appendChild(makeFlag('external', 'tag-ext',
       'Removable, so it can be unplugged and kept somewhere else'));
+  }
+  if(t.stale){
+    flags.appendChild(makeFlag('last seen', 'tag-type',
+      'A network drive not confirmed by a recent check. Picking it wakes it, '
+      + 'and the move checks it is really there before copying.'));
   }
   // Some of the selection is already here. Those are skipped rather than
   // blocking the drive, so say how many before the drive is picked.

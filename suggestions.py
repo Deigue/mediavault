@@ -37,7 +37,6 @@ import config
 import db
 import drivetypes
 import matching
-import moveops
 import scanner
 import tagging
 
@@ -176,9 +175,12 @@ def describe_drives(connected):
     out = []
     for d in db.get_all_drives():
         mount = connected.get(d["drive_id"])
+        # From the last probe, never read here: one sleeping share would
+        # otherwise hold up the whole list.
+        facts = scanner.volume_facts(mount)
         drive_type = drivetypes.detect(
             label=d["label"], stored=d.get("drive_type"),
-            bus_type=scanner.get_bus_type(mount) if mount else None,
+            bus_type=facts["bus_type"],
         )
         cold = bool(d.get("cold_storage"))
         space = drivetypes.evaluate(drive_type, d["free_bytes"], d["total_bytes"], cold)
@@ -191,18 +193,18 @@ def describe_drives(connected):
             "connected": mount is not None,
             "type": drive_type,
             "cold_storage": cold,
-            "external": scanner.is_external(mount) if mount else False,
+            "external": facts["external"],
             # A mapped share or an rclone mount. Reads go over the network, so
             # it is a worse home for something you play than any local disk.
-            "remote": (scanner.get_drive_type(mount) == scanner.DRIVE_REMOTE
-                       if mount else False),
+            "remote": facts["remote"],
             # A cloud client's virtual drive. Never a destination: the space
             # is a quota, not a disk, and a write queues an upload.
-            "cloud": scanner.is_cloud_drive(mount) if mount else False,
+            "cloud": facts["cloud"],
             "total_bytes": d["total_bytes"] or 0,
             "free_bytes": d["free_bytes"] or 0,
             "space": space,
-            "has_library": bool(mount) and moveops.find_library_root(mount) is not None,
+            # Unknown counts as yes. The move checks for real before copying.
+            "has_library": bool(mount) and facts["has_library"] is not False,
             "last_seen_path": d.get("last_seen_path"),
         })
     return out

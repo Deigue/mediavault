@@ -373,6 +373,9 @@ ADDED_DRIVE_COLUMNS = {
     "drive_type": "TEXT",
     # Filled on purpose and read only, so the low space warning is suppressed.
     "cold_storage": "INTEGER NOT NULL DEFAULT 0",
+    # The \\server\share a network drive was last read through, lower case.
+    # Lets an action find the drive by its mapping without waking the host.
+    "network_share": "TEXT",
 }
 
 
@@ -477,6 +480,18 @@ def upsert_drive(drive_id, label, total_bytes, used_bytes, free_bytes, last_seen
          last_letter,
          opts.get("root_prefix"), opts.get("redundancy_prefix"), opts.get("redundancy_include")),
     )
+    conn.commit()
+    conn.close()
+
+
+def set_network_share(drive_id, share):
+    """Record which share a drive was read through. A share belongs to one
+    drive at a time, so any other drive's claim on it is dropped."""
+    conn = get_conn()
+    conn.execute("UPDATE drives SET network_share = NULL "
+                 "WHERE network_share = ? AND drive_id != ?", (share, drive_id))
+    conn.execute("UPDATE drives SET network_share = ? WHERE drive_id = ?",
+                 (share, drive_id))
     conn.commit()
     conn.close()
 

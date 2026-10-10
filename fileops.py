@@ -9,6 +9,7 @@ inside that drive. Nothing acts on a path handed in by the caller.
 
 import os
 import shutil
+import threading
 import time
 
 import db
@@ -144,37 +145,58 @@ def _raise_new_window(before):
     return False
 
 
+# How long an open may hold the request. A local file is open well inside
+# this; past it the drive is a share still waking, and the launch carries on
+# without the page waiting.
+OPEN_GRACE_SECONDS = 2.0
+
+
 def open_in_shell(node_id):
     """
     Open a node the way double clicking it in Windows would, in front.
 
     Folders open in whatever file manager is registered, files in whatever
-    application handles that type. The launched window is brought forward
-    explicitly: left alone it opens behind the browser and only blinks in the
-    taskbar, which reads as nothing having happened.
+    application handles that type. Returns the path, or None if the drive is
+    still waking after OPEN_GRACE_SECONDS and the launch finishes on its own.
     """
-    abs_path, _node, _root = resolve_node_path(node_id)
+    outcome = {}
+    launched = threading.Event()
 
-    if os.name != "nt":
-        raise FileOpError("Opening files is only supported on Windows.")
-
-    try:
-        before = _visible_windows()
-    except Exception:
-        before = None
-
-    try:
-        os.startfile(abs_path)      # noqa: S606 - this is the whole point
-    except OSError as e:
-        raise FileOpError(f"Windows could not open it: {e}")
-
-    # Best effort. Failing to raise it is a worse experience, never an error.
-    if before is not None:
+    def launch():
         try:
-            _raise_new_window(before)
-        except Exception:
-            pass
-    return abs_path
+            abs_path, _node, _root = resolve_node_path(node_id)
+            if os.name != "nt":
+                raise FileOpError("Opening files is only supported on Windows.")
+            try:
+                before = _visible_windows()
+            except Exception:
+                before = None
+            try:
+                os.startfile(abs_path)      # noqa: S606 - this is the whole point
+            except OSError as e:
+                raise FileOpError(f"Windows could not open it: {e}")
+            outcome["path"] = abs_path
+        except Exception as e:
+            outcome["error"] = e
+            return
+        finally:
+            launched.set()
+
+        # Left alone the window opens behind the browser and only blinks in
+        # the taskbar. Best effort, and after the reply, so it never delays it.
+        if before is not None:
+            try:
+                _raise_new_window(before)
+            except Exception:
+                pass
+
+    threading.Thread(target=launch, name="mediavault-open", daemon=True).start()
+    if not launched.wait(OPEN_GRACE_SECONDS):
+        return None
+    if "error" in outcome:
+        error = outcome["error"]
+        raise error if isinstance(error, FileOpError) else FileOpError(str(error))
+    return outcome["path"]
 
 
 def _send_to_recycle_bin(abs_path):

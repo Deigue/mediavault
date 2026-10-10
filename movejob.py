@@ -86,11 +86,42 @@ def _snapshot(job):
         return copy
 
 
+def _check_all(job, steps):
+    """Plan every title once before copying any, so problems are reported
+    first. Returns the indexes of the titles that cannot go."""
+    skipped = set()
+    for index, step in enumerate(steps):
+        with _lock:
+            job["current"] = f"Checking {step['target_label']}"
+        planner = (moveops.plan_move if step["operation"] == "move"
+                   else moveops.plan_redundancy_copy)
+        try:
+            planner(step["node_id"], step["target_drive_id"])
+        except moveops.MoveError as e:
+            skipped.add(index)
+            with _lock:
+                job["items"][index].update(status="failed",
+                                           detail="skipped: " + str(e).split("\n")[0])
+            _log(job, "Skipped: " + str(e))
+    return skipped
+
+
 def _run(job, steps):
     global _current, _last_finished
     touched_drives = {s["target_drive_id"] for s in steps}
     try:
+        skipped = _check_all(job, steps)
+        if len(skipped) == len(steps):
+            _log(job, "Nothing can be done.")
+            with _lock:
+                job["status"] = "failed"
+            return
+
         for index, step in enumerate(steps):
+            if index in skipped:
+                with _lock:
+                    job["completed"] = index + 1
+                continue
             moving = step["operation"] == "move"
             with _lock:
                 job["items"][index]["status"] = "moving"
@@ -185,9 +216,9 @@ def start_batches(batches):
     """
     Begin a run covering one or more destinations, in the order given.
 
-    Every title is planned up front so obvious problems are reported before
-    anything is copied. A batch whose titles all fail is skipped and said so;
-    the run only refuses outright if nothing at all can be done.
+    Returns at once. Planning reads both drives, and a sleeping network
+    share can take most of a minute to answer, so it happens on the job
+    thread. Titles that cannot go are still reported before anything copies.
 
     Returns (job_snapshot, None) or (None, reason).
     """
@@ -212,18 +243,16 @@ def start_batches(batches):
             problems.append(f"No such target drive: {target_drive_id}")
             continue
 
-        planner = moveops.plan_move if operation == "move" else moveops.plan_redundancy_copy
         for node_id in batch.get("node_ids") or []:
-            try:
-                plan = planner(node_id, target_drive_id)
-            except moveops.MoveError as e:
-                problems.append(str(e))
+            node = db.get_node(node_id)
+            if node is None:
+                problems.append(f"Node {node_id} is no longer in the database.")
                 continue
             steps.append({
                 "node_id": node_id,
-                "name": plan["name"],
-                "category": plan["category"],
-                "size_bytes": plan["size_bytes"],
+                "name": node["name"],
+                "category": moveops.category_for(node),
+                "size_bytes": node["size_bytes"] or 0,
                 "operation": operation,
                 "target_drive_id": target_drive_id,
                 "target_label": target["label"],

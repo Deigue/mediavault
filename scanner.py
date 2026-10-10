@@ -410,6 +410,8 @@ def scan_and_store(drive_path, label=None, root_prefix=DEFAULT_ROOT_PREFIX,
     }
     db.upsert_drive(drive_id, label, total, used, free, drive_root, scan_options,
                     last_letter=drive_letter_for(drive_root))
+    if get_drive_type(drive_root) == DRIVE_REMOTE:
+        db.set_network_share(drive_id, _mount_key(drive_root))
     db.replace_nodes(drive_id, nodes)
     seed_default_tags(drive_id, nodes)
     # Tags are keyed by path, so anything renamed or moved outside MediaVault
@@ -591,20 +593,66 @@ NETWORK_CACHE_SECONDS = 60.0
 _connected_lock = threading.Lock()
 _local_cache = {"checked_at": 0.0, "drives": {}}
 _network_cache = {"checked_at": 0.0, "drives": {}, "refreshing": False, "ever": False}
+# Set whenever no network refresh is running, so a caller that must wait can
+# join the one in flight rather than starting another.
+_network_idle = threading.Event()
+_network_idle.set()
+
+# What the last probe learned about each mounted root, so a page can say
+# whether a drive is external or has a library without touching it.
+_facts = {}
+# Every network mount a probe has tried, answered or not.
+_probed_mounts = set()
 
 
-def read_marker(root):
-    """This drive's id, by marker file or by fingerprint. Runs inside
-    probe_roots, so the disk_usage call it needs is under the same deadline."""
-    return driveid.identify(root, shutil.disk_usage(root).total)
+def _has_library_root(root):
+    prefixes = [p.strip().lower() for p in DEFAULT_ROOT_PREFIX.split(",") if p.strip()]
+    return bool(find_top_level_matches(
+        root, lambda n: any(n.lower().startswith(p) for p in prefixes)))
+
+
+def read_volume(root):
+    """
+    This drive's id, by marker file or by fingerprint, plus the facts pages
+    ask about it. Runs inside probe_roots, so all of it is under the deadline.
+    The facts are only gathered again when the root holds a different drive.
+    """
+    drive_id = driveid.identify(root, shutil.disk_usage(root).total)
+    known = _facts.get(root)
+    if known and known["drive_id"] == drive_id and not known.get("stale"):
+        return known
+    remote = get_drive_type(root) == DRIVE_REMOTE
+    return {
+        "drive_id": drive_id,
+        "remote": remote,
+        # A share has no bus of its own to ask about.
+        "bus_type": None if remote else get_bus_type(root),
+        "external": False if remote else is_external(root),
+        "cloud": is_cloud_drive(root),
+        "has_library": _has_library_root(root),
+    }
+
+
+def volume_facts(root):
+    """
+    What the last probe learned about this root: {remote, bus_type, external,
+    cloud, has_library}. Never touches the drive, so has_library is None for
+    a root no probe has read yet.
+    """
+    known = _facts.get(root) if root else None
+    if known:
+        return known
+    return {"drive_id": None, "remote": bool(root) and get_drive_type(root) == DRIVE_REMOTE,
+            "bus_type": None, "external": False, "cloud": False, "has_library": None}
 
 
 def _probe_markers(roots):
     """{drive_id: root} for every root that answered with an id."""
     found = {}
-    for root, drive_id in probe_roots(roots, read_marker).items():
-        if drive_id:
-            found[drive_id] = root
+    for root, facts in probe_roots(roots, read_volume).items():
+        _facts[root] = facts
+        if facts["drive_id"]:
+            found[facts["drive_id"]] = root
     return found
 
 
@@ -615,11 +663,40 @@ def _split_roots():
     return local, network
 
 
+def _mount_key(root):
+    """The \\\\server\\share behind a network letter, lower case, from the
+    local redirector table. Instant whether or not the host is awake."""
+    share = driveid.unc_for(root)
+    return (share or root).lower()
+
+
+def _remember_shares(roots, found):
+    """Record which share each network drive answered through, so
+    find_mounted_drive can match it later without a probe."""
+    keys = {root: _mount_key(root) for root in roots}
+    _probed_mounts.update(keys.values())
+    try:
+        stored = {d["drive_id"]: d.get("network_share") for d in db.get_all_drives()}
+        for drive_id, root in found.items():
+            if drive_id in stored and stored[drive_id] != keys.get(root):
+                db.set_network_share(drive_id, keys[root])
+    except Exception:
+        # Only a shortcut for later lookups, never worth failing a probe over.
+        pass
+
+
 def _refresh_network(roots):
-    found = _probe_markers(roots)
-    with _connected_lock:
-        _network_cache.update(checked_at=time.monotonic(), drives=found,
-                              refreshing=False, ever=True)
+    found = None
+    try:
+        found = _probe_markers(roots)
+        _remember_shares(roots, found)
+    finally:
+        with _connected_lock:
+            if found is not None:
+                _network_cache.update(checked_at=time.monotonic(), drives=found,
+                                      ever=True)
+            _network_cache["refreshing"] = False
+        _network_idle.set()
 
 
 def _network_drives(roots, blocking):
@@ -627,29 +704,43 @@ def _network_drives(roots, blocking):
     The network half of the answer, refreshed off the request thread.
 
     blocking is for the callers that must be right before they act, such as
-    checking a drive is really there before moving files onto it. Rendering
-    never sets it: a page shows the last answer and picks the new one up from
-    the connection poll, rather than holding the first load of the day open
-    while a phone wakes up.
+    a scan about to read every drive. Rendering never sets it: a page shows
+    the last answer and picks the new one up from the connection poll.
     """
     with _connected_lock:
         fresh = time.monotonic() - _network_cache["checked_at"] < NETWORK_CACHE_SECONDS
         if fresh or not roots:
             return dict(_network_cache["drives"])
         already = _network_cache["refreshing"]
-        if not blocking and not already:
+        if not already:
             _network_cache["refreshing"] = True
-
-    if blocking:
-        _refresh_network(roots)
-        with _connected_lock:
-            return dict(_network_cache["drives"])
+            _network_idle.clear()
 
     if not already:
-        threading.Thread(target=_refresh_network, args=(roots,),
-                         name="mediavault-network-probe", daemon=True).start()
+        if blocking:
+            _refresh_network(roots)
+        else:
+            threading.Thread(target=_refresh_network, args=(roots,),
+                             name="mediavault-network-probe", daemon=True).start()
+    elif blocking:
+        _network_idle.wait(NETWORK_PROBE_TIMEOUT_SECONDS + 5)
+
     with _connected_lock:
         return dict(_network_cache["drives"])
+
+
+def network_status():
+    """
+    Whether a network check is running, and whether the last answer is
+    recent enough to call its drives confirmed. Pages poll this to mark a
+    network drive as only last known.
+    """
+    with _connected_lock:
+        checked = _network_cache["checked_at"] if _network_cache["ever"] else None
+        running = _network_cache["refreshing"]
+    age = None if checked is None else time.monotonic() - checked
+    return {"running": running,
+            "fresh": age is not None and age < NETWORK_CACHE_SECONDS}
 
 
 def get_connected_drives(max_age=CONNECTED_CACHE_SECONDS, include_network=True,
@@ -691,6 +782,10 @@ def invalidate_connected_cache():
     with _connected_lock:
         _local_cache["checked_at"] = 0.0
         _network_cache["checked_at"] = 0.0
+    # Kept rather than dropped, so pages can still describe a drive until the
+    # next probe has read it again.
+    for facts in list(_facts.values()):
+        facts["stale"] = True
 
 
 def drive_letter_for(root_path):
@@ -704,10 +799,39 @@ def find_mounted_drive(drive_id, max_age=CONNECTED_CACHE_SECONDS):
     """
     Where this drive is plugged in right now, or None if it is not.
 
-    Waits for the network answer rather than serving a stale one: every caller
-    is about to read or write the drive, and wrongly calling it unplugged
-    refuses an operation that would have worked.
+    Only this drive is looked for. A network drive is matched by the share
+    its letter maps to, so a sleeping host is woken by the action that
+    follows rather than by this lookup. Only a share no probe has identified
+    yet is read here.
     """
+    local = get_connected_drives(max_age, include_network=False)
+    if drive_id in local:
+        return local[drive_id]
+
+    _local, network_roots = _split_roots()
+    by_key = {_mount_key(root): root for root in network_roots}
+
+    drive = db.get_drive(drive_id) or {}
+    root = by_key.get(drive.get("network_share"))
+    if root is None:
+        with _connected_lock:
+            cached = _network_cache["drives"].get(drive_id)
+        root = cached if cached in network_roots else None
+    if root is not None:
+        return None if is_unresponsive(root) else root
+
+    # Not placed by any check yet, so it can only be behind the letter it was
+    # last seen on, and only if no other drive already owns that share.
+    # Anything else is simply not plugged in, which is answered at once.
+    last = drive.get("last_letter")
+    root = f"{last}\\" if last else None
+    if root not in network_roots:
+        return None
+    key = _mount_key(root)
+    claimed = {d.get("network_share") for d in db.get_all_drives()}
+    if key in claimed or key in _probed_mounts:
+        return None
+    # Joins a background check already running rather than starting another.
     return get_connected_drives(max_age, wait_for_network=True).get(drive_id)
 
 

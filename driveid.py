@@ -63,7 +63,7 @@ def get_share_name(drive_root):
     if os.name != "nt" or not drive_root:
         return None
 
-    unc = _unc_for(drive_root)
+    unc = unc_for(drive_root)
     if not unc:
         return None
     # "\\\\server\\share" -> "share"; a bare "\\\\server" has nothing to give.
@@ -71,7 +71,7 @@ def get_share_name(drive_root):
     return parts[-1] if len(parts) >= 2 else None
 
 
-def _unc_for(drive_root):
+def unc_for(drive_root):
     """The UNC path a root refers to, or None if it is a local volume."""
     prefix = os.path.splitdrive(drive_root)[0]
     if prefix.startswith("\\\\"):
@@ -111,7 +111,7 @@ def _fallback_fingerprint(drive_root, total_bytes):
     label, serial = get_volume_info(drive_root)
     if not label:
         # normpath("C:\\") basenames to "", which would contribute nothing.
-        label = (_unc_for(drive_root)
+        label = (unc_for(drive_root)
                  or os.path.basename(os.path.normpath(drive_root))
                  or str(drive_root))
     raw = f"{serial or 'noserial'}-{label}-{total_bytes}"

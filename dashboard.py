@@ -428,8 +428,9 @@ def home():
         d["connected"] = mount is not None
         d["current_letter"] = drive_letter(mount, d.get("last_letter"))
         # Only knowable while the drive is plugged in.
-        d["external"] = scanner.is_external(mount) if mount else False
-        d["bus_type"] = scanner.get_bus_type(mount) if mount else None
+        facts = scanner.volume_facts(mount)
+        d["external"] = facts["external"]
+        d["bus_type"] = facts["bus_type"]
 
         d["drive_type"] = drivetypes.detect(
             label=d["label"], removable=False, stored=d.get("drive_type"),
@@ -731,7 +732,8 @@ def api_node_open():
         path = fileops.open_in_shell(node_id)
     except fileops.FileOpError as e:
         return jsonify({"ok": False, "error": str(e)}), 409
-    return jsonify({"ok": True, "path": path})
+    # None: a network drive is still waking and the window follows on its own.
+    return jsonify({"ok": True, "path": path, "pending": path is None})
 
 
 @app.route("/api/suggestions/sacrifice", methods=["POST"])
@@ -798,7 +800,7 @@ def delete_refresh(drive_ids):
         mount = connected.get(drive_id)
         d["drive_type"] = drivetypes.detect(
             label=d["label"], removable=False, stored=d.get("drive_type"),
-            bus_type=scanner.get_bus_type(mount) if mount else None,
+            bus_type=scanner.volume_facts(mount)["bus_type"],
         )
         d["cold_storage"] = bool(d.get("cold_storage"))
         d["allows_cold"] = drivetypes.allows_cold_storage(d["drive_type"])
@@ -943,9 +945,7 @@ def describe_target(d, mount, source_drive_id=None):
     space = drivetypes.evaluate(drive_type, d["free_bytes"], d["total_bytes"],
                                 bool(d.get("cold_storage")))
     redundancy = db.redundancy_summary(d["drive_id"])
-    # A drive that can be stored elsewhere is the only copy that survives
-    # losing the machine, so it is worth pointing out.
-    external = scanner.is_external(mount)
+    facts = scanner.volume_facts(mount)
 
     return {
         "drive_id": d["drive_id"],
@@ -956,7 +956,12 @@ def describe_target(d, mount, source_drive_id=None):
         "type_label": drivetypes.rule_for(drive_type)["label"],
         "cold_storage": bool(d.get("cold_storage")),
         "space": space,
-        "external": external,
+        # A drive that can be stored elsewhere is the only copy that survives
+        # losing the machine, so it is worth pointing out.
+        "external": facts["external"],
+        # A network drive not confirmed by a recent check. Still offered, and
+        # woken by the move if picked.
+        "stale": facts["remote"] and not scanner.network_status()["fresh"],
         "has_redundancy": redundancy["titles"] > 0,
         "redundancy_titles": redundancy["titles"],
         "redundancy_h": human(redundancy["size_bytes"]),
@@ -1032,6 +1037,19 @@ def api_drive_state():
     }})
 
 
+def target_reply(targets):
+    """
+    A move or backup target list, answered from what is already known.
+
+    Network drives come from the last background check rather than a fresh
+    one, since waking a share can take most of a minute. The page polls
+    while network.running is true and redraws as the answer changes. The job
+    checks every drive again before it copies anything.
+    """
+    return jsonify({"ok": True, "targets": targets,
+                    "network": scanner.network_status()})
+
+
 @app.route("/api/move/targets")
 def api_move_targets():
     """
@@ -1041,9 +1059,7 @@ def api_move_targets():
     """
     exclude = request.args.get("exclude", "")
     nodes = selected_nodes()
-    # Offering a target that turns out not to be there wastes the move, so
-    # this waits for the network answer rather than serving the last one.
-    connected = scanner.get_connected_drives(max_age=0, wait_for_network=True)
+    connected = scanner.get_connected_drives(max_age=0)
     needs_library = any(n["root_type"] != "redundancy" for n in nodes) if nodes else True
 
     targets = []
@@ -1051,15 +1067,17 @@ def api_move_targets():
         if d["drive_id"] == exclude:
             continue
         mount = connected.get(d["drive_id"])
-        if mount is None or scanner.is_cloud_drive(mount):
+        facts = scanner.volume_facts(mount)
+        if mount is None or facts["cloud"]:
             continue
-        if needs_library and moveops.find_library_root(mount) is None:
+        # None is a drive no probe has read yet. The move checks it properly.
+        if needs_library and facts["has_library"] is False:
             continue
         target = annotate_conflicts(describe_target(d, mount, exclude), d["drive_id"], nodes)
         if nodes and not target["movable"]:
             continue
         targets.append(target)
-    return jsonify({"ok": True, "targets": targets})
+    return target_reply(targets)
 
 
 @app.route("/api/copy/targets")
@@ -1073,22 +1091,21 @@ def api_copy_targets():
     out: a second copy there dies with the first, which is the failure this
     is meant to survive.
     """
-    # Same as the move targets: a backup offered to a drive that is not
-    # actually there is a wasted copy, so this waits for the network answer.
-    connected = scanner.get_connected_drives(max_age=0, wait_for_network=True)
+    connected = scanner.get_connected_drives(max_age=0)
     source = request.args.get("source", "")
     nodes = selected_nodes()
 
     targets = []
     for d in db.get_all_drives():
         mount = connected.get(d["drive_id"])
-        if mount is None or d["drive_id"] == source or scanner.is_cloud_drive(mount):
+        if (mount is None or d["drive_id"] == source
+                or scanner.volume_facts(mount)["cloud"]):
             continue
         target = annotate_conflicts(describe_target(d, mount, source), d["drive_id"], nodes)
         if nodes and not target["movable"]:
             continue
         targets.append(target)
-    return jsonify({"ok": True, "targets": targets})
+    return target_reply(targets)
 
 
 @app.route("/api/move", methods=["POST"])
